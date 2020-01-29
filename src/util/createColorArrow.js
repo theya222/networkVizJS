@@ -1,5 +1,4 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * Appends an arrow head marker to the defs element to be used later.
  * @param defElement 'defs' element to append marker elements
@@ -7,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 function createColorArrow(defElement, color) {
     defElement.append("marker")
-        .attr("id", `arrow-${color}`)
+        .attr("id", "arrow-" + color)
         .attr("viewBox", "0 -5 10 10")
         .attr("refX", 8)
         .attr("markerWidth", 6)
@@ -18,5 +17,6 @@ function createColorArrow(defElement, color) {
         .attr("d", "M0,-5L10,0L0,5")
         .attr("class", "arrowHead");
 }
-exports.default = createColorArrow;
+exports.__esModule = true;
+exports["default"] = createColorArrow;
 //# sourceMappingURL=createColorArrow.js.map
