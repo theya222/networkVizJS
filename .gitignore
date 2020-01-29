@@ -18,3 +18,5 @@ yarn-error.log*
 src/**/*.map
 src/**/*.js
 !src/util/*.js
+/networkVizJS.iml
+/dist/

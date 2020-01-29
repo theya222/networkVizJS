@@ -4,7 +4,6 @@ import AlignElemContainer from "./util/AlignElemContainer";
 
 const d3 = require("d3");
 const cola = require("webcola");
-const $ = require("jquery");
 const levelgraph = require("levelgraph");
 const level = require("level-browserify");
 const updateColaLayout_1 = require("./updateColaLayout");
@@ -24,12 +23,15 @@ function networkVizJS(documentId, userLayoutOptions) {
         handleDisconnected: false,
         flowDirection: "y",
         enableEdgeRouting: true,
+        // groupCompactness: 5e-6,
+        // convergenceThreshold: 0.1,
         nodeShape: "rect",
         nodePath: (d) => "M16 48 L48 48 L48 16 L16 16 Z",
         width: 900,
         height: 600,
         pad: 15,
         margin: 10,
+        groupPad: 0,
         canDrag: () => true,
         nodeDragStart: undefined,
         nodeDragEnd: undefined,
@@ -39,48 +41,45 @@ function networkVizJS(documentId, userLayoutOptions) {
         mouseOverNode: undefined,
         mouseOutNode: undefined,
         mouseUpNode: undefined,
-        // These are "live options"
-        updateNodeColor: undefined,
-        updateNodeShape: undefined,
-        nodeRemove: undefined,
-        startArrow: undefined,
-        clickPin: undefined,
-        nodeToPin: false,
-        nodeToColor: "#ffffff",
-        nodeStrokeWidth: 1,
-        nodeStrokeColor: "grey",
-        clickNode: (node, element) => undefined,
+        mouseOverGroup: undefined,
+        mouseOutGroup: undefined,
+        mouseOverEdge: undefined,
+        mouseOutEdge: undefined,
+        clickGroup: undefined,
+        dblclickGroup: () => undefined,
+        clickNode: () => undefined,
+        dblclickNode: () => undefined,
+        clickEdge: () => undefined,
+        dblclickEdge: () => undefined,
         clickAway: () => undefined,
+        // These are "live options"
+        nodeToPin: () => false,
+        nodeToColor: () => "#ffffff",
+        nodeStrokeWidth: () => 1,
+        nodeStrokeColor: () => "grey",
         edgeColor: "black",
+        // edgeArrowhead: 0 - None, 1 - Right, -1 - Left, 2 - Bidirectional
+        edgeArrowhead: 1,
         edgeStroke: 2,
         edgeStrokePad: 20,
-        edgeLength: d => 150,
+        edgeDasharray: 0,
+        edgeLength: () => 150,
         edgeSmoothness: 0,
-        clickEdge: (d, element) => undefined,
         edgeRemove: undefined,
-        mouseOverRadial: undefined,
-        mouseOutRadial: undefined,
-        mouseOverBrush: undefined,
-        resizeDrag: undefined,
+        groupFillColor: () => "#F6ECAF",
         snapToAlignment: true,
         snapThreshold: 10,
         zoomScale: undefined,
         isSelect: () => false,
+        nodeSizeChange: undefined,
+        selection: undefined,
+        imgResize: undefined,
+        palette: undefined,
     };
-    // const X = 37;
-    // const Y = -13;
-    // const p1x = 25 + X;
-    // const p1y = 25 + Y;
-    // const p2x = 75 + X;
-    // const p3x = 100 + X;
-    // const p4y = 50 + Y;
-    // const d0 = "M16 48 L48 48 L48 16 L16 16 Z", // RECT
-    //     d1 = "M20,40a20,20 0 1,0 40,0a20,20 0 1,0 -40,0", // CIRCLE
-    //     // d2 = "M148.1,310.5h-13.4c-4.2,0-7.7-3.4-7.7-7.7v-7.4c0-4.2,3.4-7.7,7.7-7.7h13.4c4.2,0,7.7,3.4,7.7,7.7v7.4  C155.7,307.1,152.3,310.5,148.1,310.5z"; // CAPSULE
-    //     d2 = `M ${p1x} ${p1y} L ${p2x} ${p1y} C ${p3x} ${p1y} ${p3x} ${p4y} ${p2x} ${p4y} L ${p1x} ${p4y} C ${X} ${p4y} ${X} ${p1y} ${p1x} ${p1y} `; // CAPSULE
-    //
+
     const internalOptions = {
-        isDragging: false
+        isDragging: false,
+        isImgResize: false,
     };
     /**
      * Create the layoutOptions object with the users options
@@ -103,6 +102,7 @@ function networkVizJS(documentId, userLayoutOptions) {
     const nodeMap = new Map();
     const predicateTypeToColorMap = new Map();
     const predicateMap = new Map();
+    const groupMap = new Map();
     /**
      * Todo:    This is currently a hack. Create a random database on the client
      *          side to build the networks on top of.
@@ -134,6 +134,7 @@ function networkVizJS(documentId, userLayoutOptions) {
         .append("svg")
         .attr("preserveAspectRatio", "xMinYMin meet")
         .attr("viewBox", `0 0 ${width} ${height}`)
+        .style("background-color", "white")
         .classed("svg-content-responsive", true);
     svg.on("click", layoutOptions.clickAway);
     /**
@@ -155,11 +156,22 @@ function networkVizJS(documentId, userLayoutOptions) {
     drag.on("start", (d, i, elements) => {
         layoutOptions.nodeDragStart && layoutOptions.nodeDragStart(d, elements[i]);
         internalOptions.isDragging = true;
-    }).on("drag", dragged).on("end", (d, i, elements) => {
-        alignElements.remove();
-        layoutOptions.nodeDragEnd && layoutOptions.nodeDragEnd(d, elements[i]);
-        internalOptions.isDragging = false;
-    });
+        // TODO find permanent solution in vuegraph
+        if (layoutOptions.isSelect && layoutOptions.isSelect()) {
+            d.class += " highlight";
+            updateStyles();
+        }
+    })
+        .on("drag", dragged)
+        .on("end", (d, i, elements) => {
+            alignElements.remove();
+            layoutOptions.nodeDragEnd && layoutOptions.nodeDragEnd(d, elements[i]);
+            internalOptions.isDragging = false;
+            if (layoutOptions.isSelect && layoutOptions.isSelect()) {
+                d.class = d.class.replace(" highlight", "");
+                updateStyles();
+            }
+        });
 
     /**
      * Create the defs element that stores the arrow heads.
@@ -187,15 +199,29 @@ function networkVizJS(documentId, userLayoutOptions) {
         .append("path")
         .attr("d", "M 50 0 L 50 40 L 0 20 Z")
         .attr("fill", "rgb(150,150,150)");
+
+    const arrowDefsDict = {};
+
+    function addArrowDefs(defs: any, color: String, backwards: boolean) {
+        const key = color + "-" + (backwards ? "start" : "end");
+        if (!arrowDefsDict[key]) {
+            arrowDefsDict[key] = true;
+            createColorArrow_1.default(defs, "#" + color, backwards);
+        }
+        return "url(#arrow-" + color + (backwards ? "-start)" : "-end)");
+    }
+
     // Define svg groups for storing the visuals.
     const g = svg.append("g")
         .classed("svg-graph", true);
+    let group = g.append("g").attr("id", "group-container")
+        .selectAll(".group");
+    let link = g.append("g").attr("id", "link-container")
+        .selectAll(".link");
     const alignmentLines = g.append("g");
-    const alignElements = new AlignElemContainer(alignmentLines.node());
-    let group = g.append("g")
-        .selectAll(".group"), link = g.append("g")
-        .selectAll(".link"), node = g.append("g")
+    let node = g.append("g").attr("id", "node-container")
         .selectAll(".node");
+    const alignElements = new AlignElemContainer(alignmentLines.node());
     /**
      * Zooming and panning behaviour.
      */
@@ -212,28 +238,79 @@ function networkVizJS(documentId, userLayoutOptions) {
         layoutOptions.zoomScale && layoutOptions.zoomScale(d3.event.transform.k);
     }
 
+
+    /** Allow Image Resize Using Interact.js */
+    interact(".img-node")
+        .resizable({
+            edges: { left: false, right: true, bottom: true, top: false },
+            inertia: {
+                resistance: 1,
+                minSpeed: 1,
+                endSpeed: 1
+            }
+        })
+        .on("resizeend", function (event) {
+            layoutOptions.imgResize && layoutOptions.imgResize(false);
+            internalOptions.isImgResize = false;
+        })
+        .on("resizestart", function (event) {
+            layoutOptions.imgResize && layoutOptions.imgResize(true);
+            internalOptions.isImgResize = true;
+        })
+        .on("resizemove", function (event) {
+            // layoutOptions.imgResize && layoutOptions.imgResize(true);
+            internalOptions.isImgResize = true;
+            const target = event.target,
+                x = (parseFloat(target.getAttribute("data-x")) || 0),
+                y = (parseFloat(target.getAttribute("data-x")) || 0);
+
+            target.style.width = event.rect.width + "px";
+            target.style.height = event.rect.width + "px";
+            target.style.webkitTransform = target.style.transform =
+                "translate(" + x + "px," + y + "px)";
+            target.setAttribute("data-x", x);
+
+            restart();
+        });
+
+    interact.maxInteractions(Infinity);
+
     /**
-     * Get nodes within a boundary
+     * Return nodes and edges within a boundary
      * @param {Object} boundary - Bounds to search within
      * @param {Number} boundary.x
      * @param {Number} boundary.X
      * @param {Number} boundary.y
      * @param {Number} boundary.Y
-     * @returns {any[]} - Array of node objects
+     * @returns {{nodes: any[]; edges: any[]}} - object containing node array and edge array
      */
     function selectByCoords(boundary: { x: number, X: number, y: number, Y: number }) {
-        const newSelect = [];
+        const nodeSelect = [];
+        const groupSelect = [];
         const x = Math.min(boundary.x, boundary.X);
         const X = Math.max(boundary.x, boundary.X);
         const y = Math.min(boundary.y, boundary.Y);
         const Y = Math.max(boundary.y, boundary.Y);
-        nodes.forEach((d) => {
+        const boundsChecker = (d, arr) => {
             if (Math.max(d.bounds.x, x) <= Math.min(d.bounds.X, X) &&
                 Math.max(d.bounds.y, y) <= Math.min(d.bounds.Y, Y)) {
-                newSelect.push(d);
+                arr.push(d);
             }
-        });
-        return newSelect;
+        };
+        nodes.forEach((d) => boundsChecker(d, nodeSelect));
+        groups.forEach((d) => boundsChecker(d, groupSelect));
+        const edges = d3.selectAll(".line")
+            .select(".line-front")
+            .filter(function () {
+                const len = this.getTotalLength();
+                const p = len / 3;
+                const p1 = this.getPointAtLength(p);
+                const p2 = this.getPointAtLength(p * 2);
+                const p1In = p1.x >= x && p1.x <= X && p1.y >= y && p1.y <= Y;
+                const p2In = p2.x >= x && p2.x <= X && p2.y >= y && p2.y <= Y;
+                return p1In && p2In;
+            });
+        return { nodes: nodeSelect, edges: edges.data(), groups: groupSelect };
     }
 
     /**
@@ -241,8 +318,7 @@ function networkVizJS(documentId, userLayoutOptions) {
      * Allows dynamically changing node sizes based on text.
      */
     function updatePathDimensions() {
-        hoverMenuRemoveIcons(); // hover menu does not automatically change size with node
-        layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial();
+        layoutOptions.nodeSizeChange && layoutOptions.nodeSizeChange();
         node.select("path")
             .attr("d", function (d) {
                 return layoutOptions.nodePath(d);
@@ -267,7 +343,7 @@ function networkVizJS(documentId, userLayoutOptions) {
      */
     function repositionText() {
         return Promise.resolve()
-            .then(_ => {
+            .then(() => {
                 node.selectAll("text")
                     .each(function (d) {
                         const img = d3.select(this.parentNode.parentNode.parentNode).select("image").node();
@@ -348,8 +424,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                             .attr("x", d => d.width / 2 || 0)
                             .attr("y", 0)
                             .style("opacity", 1);
-                    }
-                    else {
+                    } else {
                         foOnNode
                             .style("opacity", 0);
                     }
@@ -358,334 +433,45 @@ function networkVizJS(documentId, userLayoutOptions) {
     }
 
     /**
-     * This function remove the icons from
-     * the hover menu
-     * @param parent element's parent
+     * center group text in group and adjust padding values to create text area.
      */
-    function hoverMenuRemoveIcons(parent?) {
-        if (parent) {
-            parent.selectAll(".menu-action").remove();
-            parent.selectAll(".menu-shape").remove();
-            parent.selectAll(".menu-color").remove();
-            parent.selectAll(".menu-trash").remove();
-            parent.selectAll(".menu-hover-box").remove();
-            parent.selectAll(".edge-hover-menu").remove();
-            parent.selectAll(".menu-resize").remove();
-        }
-        else {
-            d3.selectAll(".menu-action").remove();
-            d3.selectAll(".menu-shape").remove();
-            d3.selectAll(".menu-color").remove();
-            d3.selectAll(".menu-trash").remove();
-            d3.selectAll(".menu-hover-box").remove();
-            d3.selectAll(".edge-hover-menu").remove();
-            d3.selectAll(".menu-resize").remove();
-        }
-    }
-
-    /**
-     * This function adds a menu to
-     * Delete, Pin, Change color and Change shape of a node
-     * @param d - node data
-     * @param me - node d3 element
-     */
-    function addHoverMenu(d, me) {
-        const element = d3.select(me); // The node
-        const parent = d3.select(me.parentNode);
-        const foWidth = 30;
-        const foHeight = d.height - layoutOptions.margin / 2;
-        const foX = d.width - layoutOptions.margin / 2;
-        const foY = d.height / 2;
-        const currentShape = d.nodeShape;
-        let firstShape = true;
-        let shapeY = 3 + d.height / 2 - 26;
-        hoverMenuRemoveIcons();
-        // CREATE SHAPES MENU
-        const shapeMenu = parent.append("g")
-            .attr("x", -30)
-            .attr("y", foY)
-            .attr("width", 30)
-            .attr("height", foHeight)
-            .attr("class", "menu-shape")
-            .on("mouseout", function () {
-                const e = d3.event;
-                const element = d3.select(this);
-                const mouse = d3.mouse(this);
-                const mosX = mouse[0];
-                const mosY = mouse[1];
-                setTimeout(function () {
-                    if (mosX < -20 || (mosY > d.height - 4 || mosY < 2)) {
-                        hoverMenuRemoveIcons(parent);
-                    }
-                }, 50);
+    function repositionGroupText() {
+        group.select("text")
+            .style("width", function (d) {
+                return `${d.bounds.width()}px`;
             });
-        if (currentShape !== "capsule") {
-            firstShape = false;
-            shapeMenu.append("rect")
-                .attr("rx", 6)
-                .attr("ry", 6)
-                .attr("x", layoutOptions.margin / 2 - 27)
-                .attr("y", shapeY)
-                .attr("width", 24)
-                .attr("height", 21)
-                .attr("class", "menu-shape-rect")
-                .attr("fill", "#edfdfd")
-                .attr("stroke", "#b8c6c6")
-                .attr("stroke-width", 2)
-                .on("click", function () {
-                    hoverMenuRemoveIcons(parent);
-                    layoutOptions.updateNodeShape && layoutOptions.updateNodeShape(d, "capsule");
-                });
-        }
-        if (currentShape !== "rect") {
-            if (!firstShape)
-                shapeY = shapeY + 26;
-            firstShape = false;
-            shapeMenu.append("rect")
-                .attr("x", layoutOptions.margin / 2 - 27)
-                .attr("y", shapeY)
-                .attr("width", 24)
-                .attr("height", 21)
-                .attr("class", "menu-shape-rect")
-                .attr("fill", "#edfdfd")
-                .attr("stroke", "#b8c6c6")
-                .attr("stroke-width", 2)
-                .on("click", function () {
-                    hoverMenuRemoveIcons(parent);
-                    layoutOptions.updateNodeShape && layoutOptions.updateNodeShape(d, "rect");
-                });
-        }
-        if (currentShape !== "circle") {
-            if (!firstShape)
-                shapeY = shapeY + 36;
-            firstShape = false;
-            shapeMenu.append("circle")
-                .attr("cx", layoutOptions.margin / 2 - 15)
-                .attr("cy", shapeY)
-                .attr("r", 12)
-                .attr("class", "menu-shape-circle")
-                .attr("fill", "#edfdfd")
-                .attr("stroke", "#b8c6c6")
-                .attr("stroke-width", 2)
-                .on("click", function () {
-                    hoverMenuRemoveIcons(parent);
-                    layoutOptions.updateNodeShape && layoutOptions.updateNodeShape(d, "circle");
-                });
-        }
-        // CREATE COLOR SELECTOR ICON
-        const foColor = parent.append("foreignObject")
-            .attr("x", (d.width / 2) - 12)
-            .attr("y", -22 + layoutOptions.margin / 2)
-            .attr("width", 24)
-            .attr("height", 24)
-            .style("overflow", "visible")
-            .attr("class", "menu-color");
-        const colorPik = foColor.append("xhtml:div")
-            .append("div");
-        if (d.id.slice(0, 5) === "note-") {
-            colorPik.append("div")
-                .html("<div id=\"controls\"><div><i class=\"fa fa-paint-brush\" id=\"bgpicker\"></i></div></div>");
-            const colorPickerEl = $("#bgpicker");
-            colorPickerEl.css("color", d.color);
-            colorPickerEl.css("text-shadow", "1px 0px 6px #1f2d3d");
-            colorPickerEl.click(function (e) {
-                e.stopPropagation();
-                layoutOptions.mouseOverBrush && layoutOptions.mouseOverBrush(e, element, d);
+        group.select("foreignObject")
+            .attr("x", function (d) {
+                // center FO in middle of group
+                const textWidth = d3.select(this).select("text").node().offsetWidth;
+                if (d.bounds) {
+                    return (d.bounds.width() - textWidth) / 2;
+                }
+                return 0;
             })
-                .on("mouseout", function () {
-                    layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial(d);
-                    setTimeout(function () {
-                        hoverMenuRemoveIcons(parent);
-                    }, 50);
-                });
-        }
-        // CREATE TRASH ICON
-        const foTrash = parent.append("foreignObject")
-            .attr("x", (d.width / 2) - 12)
-            .attr("y", d.height + 3 - layoutOptions.margin / 2)
-            .attr("class", "menu-trash")
-            .attr("width", 22)
-            .attr("height", 27)
-            .style("overflow", "visible")
-            .on("mouseout", function () {
-                const e = d3.event;
-                const element = d3.select(this);
-                const mouse = d3.mouse(this);
-                const mosX = mouse[0];
-                const mosY = mouse[1];
-                layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial(d);
-                setTimeout(function () {
-                    if (mosX > d.width / 2 + 11 || mosX < d.width / 2 - 11 || mosY > d.height + 21) {
-                        hoverMenuRemoveIcons(parent);
+            .each(function (d) {
+                const textNode = d3.select(this).select("text").node();
+                const textHeight = textNode.innerText === "" ? 0 : textNode.offsetHeight;
+                const pad = textHeight + 5;
+                // TODO if padding is unsymmetrical by more than double the node size, things break. (defualt size 136)
+                const opPad = Math.max(pad - 136, 0);
+                switch (typeof d.padding) {
+                    case "number": {
+                        const padI = d.padding;
+                        d.padding = { x: padI, X: padI, y: pad, Y: opPad };
+                        break;
                     }
-                }, 50);
-            });
-        const trash = foTrash.append("xhtml:div")
-            .append("div")
-            .attr("class", "icon-wrapper")
-            .html("<i class=\"fa fa-trash-o custom-icon\"></i>")
-            .on("click", function () {
-                layoutOptions.nodeRemove && layoutOptions.nodeRemove(d);
-                layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial(d);
-            })
-            .on("mouseover", function () {
-                layoutOptions.mouseOverRadial && layoutOptions.mouseOverRadial(d);
-            });
-        // CREATE RIGHT MENU
-        const fo = parent.append("foreignObject")
-            .attr("x", foX + 5)
-            .attr("y", foY - 26)
-            .attr("width", foWidth)
-            .attr("height", 30)
-            .attr("class", "menu-action")
-            .style("overflow", "visible")
-            .on("mouseover", function () {
-                layoutOptions.mouseOverRadial && layoutOptions.mouseOverRadial(d);
-            })
-            .on("mouseout", function () {
-                const e = d3.event;
-                const element = d3.select(this);
-                const mouse = d3.mouse(this);
-                const mosX = mouse[0];
-                const mosY = mouse[1];
-                layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial(d);
-                setTimeout(function () {
-                    if (mosX > d.width + 21 || mosY > d.height - 4 || mosY < 2) {
-                        hoverMenuRemoveIcons(parent);
+                    case "object": {
+                        d.padding.y = pad;
+                        d.padding.Y = opPad;
+                        break;
                     }
-                }, 50);
-            });
-        const div = fo.append("xhtml:div")
-            .append("div");
-        // CREATE PIN ICON
-        const pinIcon = div.append("div").attr("class", "icon-wrapper");
-        if (layoutOptions.nodeToPin(d)) {
-            pinIcon.html("<i class=\"fa fa-thumb-tack pinned\"></i>");
-        }
-        else {
-            pinIcon.html("<i class=\"fa fa-thumb-tack unpinned\"></i>");
-        }
-        pinIcon.on("click", function () {
-            layoutOptions.clickPin && layoutOptions.clickPin(d, element);
-            hoverMenuRemoveIcons(parent);
-            layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial(d);
-            restart();
-        });
-        // CREATE DRAW ARROW icon
-        div.append("div").attr("class", "icon-wrapper")
-            .html("<i class=\"fa fa-arrow-right custom-icon\"></i>")
-            .on("mousedown", function () {
-                layoutOptions.startArrow && layoutOptions.startArrow(d, element);
-            });
-        // Rectangle to detect mouse leave
-        const parentBBox = parent.node().getBBox();
-        parent.insert("rect", "path")
-            .attr("x", parentBBox.x - 4)
-            .attr("y", parentBBox.y - 2)
-            .attr("width", parentBBox.width)
-            .attr("height", parentBBox.height)
-            .attr("fill", "rgba(0,0,0,0)")
-            .attr("class", "menu-hover-box")
-            .on("mouseout", (d, i, n) => {
-                const elem = n[i];
-                const e = d3.event;
-                e.preventDefault();
-                const mouse = d3.mouse(elem);
-                const bbox = elem.getBBox();
-                const mosX = mouse[0];
-                const mosY = mouse[1];
-                if (mosX < bbox.x || mosX > (bbox.width + bbox.x) || mosY > (bbox.height + bbox.y) || mosY < bbox.y) {
-                    hoverMenuRemoveIcons(parent);
+                    default: {
+                        const p = layoutOptions.groupPad ? layoutOptions.groupPad : 0;
+                        d.padding = { x: p, X: p, y: pad, Y: opPad };
+                    }
                 }
             });
-        const xresize = parent.append("rect")
-            .classed("menu-resize", true)
-            .attr("width", 8).attr("height", 8)
-            .attr("x", (d.width) - layoutOptions.margin / 2 - 4)
-            .attr("y", d.height - layoutOptions.margin / 2 - 4)
-            .attr("fill", "white")
-            .attr("stroke", "black")
-            .attr("cursor", "e-resize")
-            .on("mousedown", (d) => {
-                const e = d3.event;
-                layoutOptions.resizeDrag && layoutOptions.resizeDrag(d, element, e);
-            });
-
-        layoutOptions.mouseOverNode && layoutOptions.mouseOverNode(d, element);
-
-
-        /** --------------------------------------------------------------------------------
-         Allow Image Resize Using Interact.js
-         -------------------------------------------------------------------------------- **/
-        const imgNode = interact(".img-node")
-            .resizable({
-                edges: { left: false, right: true, bottom: true, top: false },
-                inertia: {
-                    resistance: 1,
-                    minSpeed: 1,
-                    endSpeed: 1
-                }
-            })
-            .on("resizeend", function (event) {
-                layoutOptions.imgResize && layoutOptions.imgResize(false);
-            })
-            .on("resizestart", function (event) {
-                layoutOptions.imgResize && layoutOptions.imgResize(true);
-            })
-            .on("resizemove", function (event) {
-                // layoutOptions.imgResize && layoutOptions.imgResize(true);
-                const target = event.target,
-                    x = (parseFloat(target.getAttribute("data-x")) || 0),
-                    y = (parseFloat(target.getAttribute("data-x")) || 0);
-
-                target.style.width = event.rect.width + "px";
-                target.style.height = event.rect.width + "px";
-                target.style.webkitTransform = target.style.transform =
-                    "translate(" + x + "px," + y + "px)";
-                target.setAttribute("data-x", x);
-                // target.setAttribute('data-y', y);
-
-                parent.select(".img-node")
-                    .attr("x", function (d) {
-                        const textWidth = this.getBBox().width;
-                        return d.width / 2 - textWidth / 2;
-                    })
-                    .attr("y", function (d) {
-                        const textHeight = this.getBBox().height;
-                        return d.width / 2 - textHeight / 2;
-                    });
-
-                restart();
-            });
-
-        interact.maxInteractions(Infinity);
-
-    }
-
-    /**
-     * This function delete the node hover menu.
-     * It will calculate at which position to the node
-     * the menu should be removed
-     * @param d - node data
-     * @param me - node d3 element
-     */
-    function deleteHoverMenu(d, me) {
-        const e = d3.event;
-        e.preventDefault();
-        const element = d3.select(me);
-        const parent = d3.select(me.parentNode);
-        const mouse = d3.mouse(me.parentElement);
-        const mosX = mouse[0];
-        const mosY = mouse[1];
-        if (mosY < -15 || mosY > d.height + 2 || mosX < -30 || mosX > d.width + 20) {
-            hoverMenuRemoveIcons(parent);
-        }
-        // if (mosX < -20 || mosX > (d.width + 40) || mosY < -15 || mosY > d.height + 10 ||
-        //   (mosX < d.width && mosX > d.width / 2 && mosY > 0 && mosY < d.height) ||
-        //   (mosX < d.width / 2 && mosX > 0 && mosY > 0 && mosY < d.height)) {
-        //   hoverMenuRemoveIcons(parent)
-        // }
-        layoutOptions.mouseOutNode && layoutOptions.mouseOutNode(d, element);
     }
 
     /**
@@ -694,18 +480,64 @@ function networkVizJS(documentId, userLayoutOptions) {
     function updateStyles() {
         return new Promise((resolve, reject) => {
 
-            /** --------------------------------------------------------------------------------
-             GROUPS
-             -------------------------------------------------------------------------------- **/
+            /** GROUPS */
             group = group.data(groups);
+            group.exit().remove();
             const groupEnter = group.enter()
-                .append("rect")
+                .append("g")
+                .call(simulation.drag);
+            groupEnter.append("rect")
                 .attr("rx", 8)
                 .attr("ry", 8)
-                .attr("class", "group")
-                .style("fill", "green");
-            // .call(simulation.drag);
+                .attr("class", d => `group ${d.data.class}`)
+                .attr("stroke", "black")
+                .on("mouseover", function (d) {
+                    layoutOptions.mouseOverGroup && layoutOptions.mouseOverGroup(d, d3.select(this), d3.event);
+                })
+                .on("mouseout", function (d) {
+                    layoutOptions.mouseOutGroup && layoutOptions.mouseOutGroup(d, d3.select(this), d3.event);
+                })
+                .on("click", function (d) {
+                    layoutOptions.clickGroup && layoutOptions.clickGroup(d, d3.select(this), d3.event);
+                })
+                .on("dblclick", function (d) {
+                    layoutOptions.dblclickGroup && layoutOptions.dblclickGroup(d, d3.select(this), d3.event);
+                });
+            // add text to group
+            groupEnter
+                .append("foreignObject")
+                .attr("y", 5)
+                .attr("pointer-events", "none")
+                .attr("width", 1)
+                .attr("height", 1)
+                .style("overflow", "visible")
+                .append("xhtml:div")
+                .attr("xmlns", "http://www.w3.org/1999/xhtml")
+                .append("text")
+                .attr("pointer-events", "none")
+                .classed("editable", true)
+                .attr("contenteditable", "true")
+                .attr("tabindex", "-1")
+                .style("display", "inline-block")
+                .style("text-align", "center")
+                .style("font-weight", "100")
+                .style("font-size", "22px")
+                .style("font-family", "\"Source Sans Pro\", sans-serif")
+                .style("white-space", "pre-wrap")
+                .style("word-break", "break-word")
+                .html((d) => d.data.text || "");
             group = group.merge(groupEnter);
+
+            group.select(".group")
+                .attr("fill", layoutOptions.groupFillColor)
+                .attr("class", d => `group ${d.data.class}`);
+
+            // allow for text updating
+            group.select("text")
+                .style("color", d => computeTextColor(d.data.color))
+                .html(d => d.data.text || "");
+
+
             /////// NODE ///////
             node = node.data(nodes, d => d.index);
             node.exit().remove();
@@ -717,12 +549,12 @@ function networkVizJS(documentId, userLayoutOptions) {
                 .call(drag); // Drag controlled by filter.
 
 
-            /** --------------------------------------------------------------------------------
-             Append Text to Node
-             Here we add node beauty.
-             To fit nodes to the short-name calculate BBox
-             from https://bl.ocks.org/mbostock/1160929
-             -------------------------------------------------------------------------------- **/
+            /**
+             * Append Text to Node
+             * Here we add node beauty.
+             * To fit nodes to the short-name calculate BBox
+             * from https://bl.ocks.org/mbostock/1160929
+             */
             const foBox = nodeEnter.append("foreignObject")
                 .attr("pointer-events", "none")
                 .classed("node-HTML-content", true)
@@ -734,9 +566,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                 .attr("xmlns", "http://www.w3.org/1999/xhtml");
 
             foBox.append("text")
-                // .attr("contenteditable", "true")
                 .attr("tabindex", "-1")
-                .attr("class", d => d.class)
                 .attr("pointer-events", "none")
                 .style("cursor", "text")
                 .style("text-align", "center")
@@ -746,9 +576,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                 .classed("editable", true)
                 .style("display", "inline-block");
 
-            /** --------------------------------------------------------------------------------
-             Choose the node shape and style.
-             -------------------------------------------------------------------------------- **/
+            /** Choose the node shape and style. */
             let nodeShape;
             nodeShape = nodeEnter.insert("path", "foreignObject");
             nodeShape.attr("d", layoutOptions.nodePath);
@@ -756,9 +584,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                 .attr("vector-effect", "non-scaling-stroke")
                 .classed("node-path", true);
 
-            /** --------------------------------------------------------------------------------
-             Append Image to Node
-             -------------------------------------------------------------------------------- **/
+            /** Append Image to Node */
             nodeEnter
                 .insert("image", "foreignObject")
                 .on("mouseover", function (d) {
@@ -766,21 +592,17 @@ function networkVizJS(documentId, userLayoutOptions) {
                     if (internalOptions.isDragging) {
                         return;
                     }
-                    layoutOptions.mouseOverNode && layoutOptions.mouseOverNode(d, d3.select(this.parentNode).select("path"));
+                    layoutOptions.mouseOverNode && layoutOptions.mouseOverNode(d, d3.select(this.parentNode).select("path"), d3.event);
                 })
                 .on("mouseout", function (d) {
                     nodeEnter.attr("cursor", "move");
                 });
 
-            /** --------------------------------------------------------------------------------
-             Merge the entered nodes to the update nodes.
-             -------------------------------------------------------------------------------- **/
+            /** Merge the entered nodes to the update nodes. */
             node = node.merge(nodeEnter)
                 .classed("fixed", d => d.fixed || false);
 
-            /** --------------------------------------------------------------------------------
-             Update Node Image Src
-             -------------------------------------------------------------------------------- **/
+            /** Update Node Image Src */
             const imgSelect = node.select("image")
                 .attr("class", "img-node")
                 .attr("width", d => d.img ? d.img.width : 0)
@@ -791,39 +613,22 @@ function networkVizJS(documentId, userLayoutOptions) {
                     }
                 });
 
-            /** --------------------------------------------------------------------------------
-             Update the text property (allowing dynamically changing text)
-             -------------------------------------------------------------------------------- **/
+            /** Update the text property (allowing dynamically changing text) */
             const textSelect = node.select("text")
                 .html(function (d) {
                     return d.shortname || d.hash;
                 })
-                .attr("class", d => d.class)
-                .style("color", d => {
-                    let color = "#000000";
-                    if (d.color) {
-                        if (d.color.length === 7 && d.color[0] === "#") {
-                            const r = parseInt(d.color.substring(1, 3), 16);
-                            const g = parseInt(d.color.substring(3, 5), 16);
-                            const b = parseInt(d.color.substring(5, 7), 16);
-                            const brightness = Math.sqrt(0.299 * r * r + 0.587 * g * g + 0.114 * b * b);
-                            if (brightness <= 150) {
-                                color = "#FFFFFF";
-                            }
-                        }
-                    }
-                    return color;
-                })
+                .style("color", d => computeTextColor(d.color))
                 .style("max-width", d => d.fixedWidth ? d.width - layoutOptions.pad * 2 + layoutOptions.margin + "px" : "none")
                 .style("word-break", d => d.fixedWidth ? "break-word" : "normal")
                 .style("white-space", d => d.fixedWidth ? "pre-wrap" : "pre");
 
 
-            /** ------------------------------------------------------------------------------- **
+            /**
              * Here we can update node properties that have already been attached.
              * When restart() is called, these are the properties that will be affected
              * by mutation.
-             ** ------------------------------------------------------------------------------- **/
+             */
             const updateShapes = node.select("path")
                 .attr("class", d => d.class);
             // These changes apply to both rect and circle
@@ -834,34 +639,37 @@ function networkVizJS(documentId, userLayoutOptions) {
             // update size
             updatePathDimensions();
             // These CANNOT be arrow functions or 'this' context becomes wrong.
-            updateShapes.on("mouseover", function (d) {
-                if (internalOptions.isDragging) {
-                    return;
-                }
-                addHoverMenu(d, this);
-            }).on("mouseout", function (d) {
-                if (internalOptions.isDragging) {
-                    return;
-                }
-                deleteHoverMenu(d, this);
-            }).on("click", function (d) {
-                const elem = d3.select(this);
-                setTimeout(() => {
-                    layoutOptions.clickNode(d, elem);
-                }, 50);
-            }).on("mouseup", function (d) {
-                layoutOptions.mouseUpNode && layoutOptions.mouseUpNode(d, d3.select(this));
-            }).on("mousedown", function (d) {
-                if ((layoutOptions.canDrag === undefined) || (layoutOptions.canDrag())) {
-                    return;
-                }
-                layoutOptions.mouseDownNode && layoutOptions.mouseDownNode(d, d3.select(this));
-            });
+            updateShapes
+                .on("mouseover", function (d) {
+                    if (internalOptions.isDragging) {
+                        return;
+                    }
+                    layoutOptions.mouseOverNode && layoutOptions.mouseOverNode(d, d3.select(this), d3.event);
+                })
+                .on("mouseout", function (d) {
+                    if (internalOptions.isDragging) {
+                        return;
+                    }
+                    layoutOptions.mouseOutNode && layoutOptions.mouseOutNode(d, d3.select(this));
+                })
+                .on("dblclick", function (d) {
+                    layoutOptions.dblclickNode && layoutOptions.dblclickNode(d, d3.select(this), d3.event);
+                })
+                .on("click", function (d) {
+                    layoutOptions.clickNode && layoutOptions.clickNode(d, d3.select(this), d3.event);
+                })
+                .on("mouseup", function (d) {
+                    layoutOptions.mouseUpNode && layoutOptions.mouseUpNode(d, d3.select(this));
+                })
+                .on("mousedown", function (d) {
+                    if ((layoutOptions.canDrag === undefined) || (layoutOptions.canDrag())) {
+                        return;
+                    }
+                    layoutOptions.mouseDownNode && layoutOptions.mouseDownNode(d, d3.select(this));
+                });
 
 
-            /** ------------------------------------------------------------------------------- **
-             * LINK
-             ** ------------------------------------------------------------------------------- **/
+            /** LINK */
             link = link.data(links, d => d.source.index + "-" + d.target.index);
             link.exit().remove();
             const linkEnter = link.enter()
@@ -872,26 +680,33 @@ function networkVizJS(documentId, userLayoutOptions) {
                 .attr("stroke", "rgba(0, 0, 0, 0)")
                 .attr("fill", "none");
             linkEnter.append("path")
+                .attr("class", "line-front")
                 .attr("stroke-width", layoutOptions.edgeStroke)
                 .attr("stroke", layoutOptions.edgeColor)
-                .attr("fill", "none")
-                .attr("marker-end", d => `url(#arrow-${typeof layoutOptions.edgeColor == "string" ? layoutOptions.edgeColor : layoutOptions.edgeColor(d.edgeData)})`);
-            linkEnter.on("mouseenter", function (d) {
-                addEdgeHoverMenu(d, this);
-            }).on("mouseleave", function (d) {
-                deleteEdgeHoverMenu(d, this);
-            }).on("click", function (d) {
-                const elem = d3.select(this);
-                // IMPORTANT, without this vuegraph will crash in SWARM. bug caused by blur event handled by medium editor.
-                d3.event.stopPropagation();
-                layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial(d);
-                setTimeout(() => {
-                    layoutOptions.clickEdge(d, elem);
-                }, 50);
-            });
+                .attr("fill", "none");
+            linkEnter
+                .on("mouseenter", function (d) {
+                    layoutOptions.mouseOverEdge && layoutOptions.mouseOverEdge(d, d3.select(this), d3.event);
+                })
+                .on("mouseleave", function (d) {
+                    layoutOptions.mouseOutEdge && layoutOptions.mouseOutEdge();
+                })
+                .on("dblclick", function (d) {
+                    const elem = d3.select(this);
+                    const e = d3.event;
+                    // IMPORTANT, without this vuegraph will crash in SWARM. bug caused by blur event handled by medium editor.
+                    e.stopPropagation();
+                    setTimeout(() => {
+                        layoutOptions.dblclickEdge(d, elem, e);
+                    }, 50);
+                })
+                .on("click", function (d) {
+                    layoutOptions.clickEdge(d, d3.select(this), d3.event);
+                });
             // Add an empty text field.
             linkEnter
                 .append("foreignObject")
+                .attr("pointer-events", "none")
                 .classed("edge-foreign-object", true)
                 .attr("width", 1)
                 .attr("height", 1)
@@ -899,6 +714,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                 .append("xhtml:div")
                 .attr("xmlns", "http://www.w3.org/1999/xhtml")
                 .append("text")
+                .attr("pointer-events", "none")
                 .classed("editable", true)
                 .attr("contenteditable", "true")
                 .attr("tabindex", "-1")
@@ -920,6 +736,37 @@ function networkVizJS(documentId, userLayoutOptions) {
                     return layoutOptions.edgeLabelText(d.predicate);
                 });
             }
+            link.select(".line-front")
+                .attr("marker-start", d => {
+                    const color = typeof layoutOptions.edgeColor == "string" ? layoutOptions.edgeColor : layoutOptions.edgeColor(d.predicate);
+                    if (typeof layoutOptions.edgeArrowhead != "number") {
+                        if (layoutOptions.edgeArrowhead(d.predicate) == -1 || layoutOptions.edgeArrowhead(d.predicate) == 2) {
+                            if (d.predicate.class.includes("highlight")) {
+                                return addArrowDefs(defs, "409EFF", true);
+                            }
+                            return addArrowDefs(defs, color, true);
+                        }
+                        return "none";
+                    }
+                    return addArrowDefs(defs, color, true);
+                })
+                .attr("marker-end", d => {
+                    const color = typeof layoutOptions.edgeColor == "string" ? layoutOptions.edgeColor : layoutOptions.edgeColor(d.predicate);
+                    if (typeof layoutOptions.edgeArrowhead != "number") {
+                        if (layoutOptions.edgeArrowhead(d.predicate) == 1 || layoutOptions.edgeArrowhead(d.predicate) == 2) {
+                            if (d.predicate.class.includes("highlight")) {
+                                return addArrowDefs(defs, "409EFF", false);
+                            }
+                            return addArrowDefs(defs, color, false);
+                        }
+                        return "none";
+                    }
+                    return addArrowDefs(defs, color, false);
+                })
+                .attr("class", d => "line-front " + d.predicate.class.replace("highlight", "highlight-edge"))
+                .attr("stroke-width", d => typeof layoutOptions.edgeStroke == "string" ? layoutOptions.edgeStroke : layoutOptions.edgeStroke(d.predicate))
+                .attr("stroke-dasharray", d => typeof layoutOptions.edgeDasharray == "string" ? layoutOptions.edgeDasharray : layoutOptions.edgeDasharray(d.predicate))
+                .attr("stroke", d => d.predicate.stroke ? d.predicate.stroke : "black");
             return resolve();
         });
     }
@@ -930,23 +777,24 @@ function networkVizJS(documentId, userLayoutOptions) {
      * This is where aesthetics can be changed.
      */
 
-    function restart(callback?) {
+    function restart(callback?, preventLayout?) {
         return Promise.resolve()
             .then(() => {
-                if (callback === "NOUPDATE") {
-                    return;
-                }
-                else {
+                if (!preventLayout) {
                     return updateStyles();
+                }
+                if (callback === "NOUPDATE") {
+                    console.error("WARNING OLD CODE");
+                    return;
                 }
             })
             .then(repositionText)
-            .then(_ => {
+            .then(() => {
                 /**
                  * Helper function for drawing the lines.
                  * Adds quadratic curve to smooth corners in line
                  */
-                const lineFunction = points => {
+                const lineFunction = (points) => {
                     if (points.length <= 2 || !layoutOptions.edgeSmoothness || layoutOptions.edgeSmoothness === 0) {
                         // fall back on old method if no need to curve edges
                         return d3.line().x(d => d.x).y(d => d.y)(points);
@@ -963,8 +811,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                         if ((layoutOptions.edgeSmoothness * 2 > v01abs)) {
                             dx = v01.x / 2;
                             dy = v01.y / 2;
-                        }
-                        else {
+                        } else {
                             dx = layoutOptions.edgeSmoothness * uv01.x;
                             dy = layoutOptions.edgeSmoothness * uv01.y;
                         }
@@ -975,8 +822,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                         if ((layoutOptions.edgeSmoothness * 2 > v12abs)) {
                             dx = v12.x / 2;
                             dy = v12.y / 2;
-                        }
-                        else {
+                        } else {
                             dx = layoutOptions.edgeSmoothness * uv12.x;
                             dy = layoutOptions.edgeSmoothness * uv12.y;
                         }
@@ -995,16 +841,14 @@ function networkVizJS(documentId, userLayoutOptions) {
                     }
                     try {
                         simulation.prepareEdgeRouting();
-                    }
-                    catch (err) {
+                    } catch (err) {
                         console.error(err);
                         return;
                     }
                     try {
                         link.selectAll("path")
                             .attr("d", d => lineFunction(simulation.routeEdge(d, undefined, undefined)));
-                    }
-                    catch (err) {
+                    } catch (err) {
                         console.error(err);
                         return;
                     }
@@ -1013,8 +857,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                             link.selectAll("path").each(function (d) {
                                 this.parentNode.insertBefore(this, this);
                             });
-                    }
-                    catch (err) {
+                    } catch (err) {
                         console.log(err);
                         return;
                     }
@@ -1060,8 +903,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                         let route;
                         try {
                             route = cola.makeEdgeBetween(d.source.innerBounds, d.target.innerBounds, 5);
-                        }
-                        catch (err) {
+                        } catch (err) {
                             console.error(err);
                             return;
                         }
@@ -1077,8 +919,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                             let route;
                             try {
                                 route = cola.makeEdgeBetween(d.source.innerBounds, d.target.innerBounds, 5);
-                            }
-                            catch (err) {
+                            } catch (err) {
                                 console.error(err);
                                 return 0;
                             }
@@ -1089,19 +930,16 @@ function networkVizJS(documentId, userLayoutOptions) {
                             let route;
                             try {
                                 route = cola.makeEdgeBetween(d.source.innerBounds, d.target.innerBounds, 5);
-                            }
-                            catch (err) {
+                            } catch (err) {
                                 console.error(err);
                                 return 0;
                             }
                             return (route.sourceIntersection.y + route.targetIntersection.y - textHeight) / 2;
                         });
-                    group.attr("x", function (d) {
-                        return d.bounds.x;
-                    })
-                        .attr("y", function (d) {
-                            return d.bounds.y;
-                        })
+
+                    group.attr("transform", d => `translate(${d.bounds.x},${d.bounds.y})`);
+                    repositionGroupText();
+                    group.select("rect")
                         .attr("width", function (d) {
                             return d.bounds.width();
                         })
@@ -1119,10 +957,14 @@ function networkVizJS(documentId, userLayoutOptions) {
                 node.attr("transform", d => d.innerBounds ?
                     `translate(${d.innerBounds.x},${d.innerBounds.y})`
                     : `translate(${d.x},${d.y})`);
+                repositionGroupText();
             })
             .then(() => typeof callback === "function" && callback());
     }
 
+    /**
+     * Handle layout of disconnected graph components.
+     */
     function handleDisconnects() {
         simulation.handleDisconnected(true);
         restart().then(() => {
@@ -1130,31 +972,37 @@ function networkVizJS(documentId, userLayoutOptions) {
         });
     }
 
-    // Helper function for updating links after node mutations.
-    // Calls a function after links added.
-    function createNewLinks(callback) {
-        tripletsDB.get({}, (err, l) => {
-            if (err) {
-                console.error(err);
-            }
+    /**
+     * Helper function for updating links after node mutations.
+     */
+    function createNewLinks() {
+        return new Promise((resolve, reject) => tripletsDB.get({}, (err, l) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(l);
+                }
+            })
+        ).then((l) => {
             // Create edges based on LevelGraph triplets
-            links = l.map(({ subject, object, predicate }) => {
+            links = (<any[]>l).map(({ subject, object, predicate }) => {
                 const source = nodeMap.get(subject);
                 const target = nodeMap.get(object);
                 predicateMap.set(predicate.hash, predicate); // update predicateMap to match new link object
                 return { source, target, predicate };
             });
-            restart(callback);
-        });
+        }).catch((err) => {
+            console.error(err);
+        }).then(restart);
+
     }
 
     /**
      * Take a node object or list of nodes and add them.
      * @param {object | object[]} nodeObjectOrArray
-     * @param callback
      * @param preventLayout
      */
-    function addNode(nodeObjectOrArray, callback, preventLayout) {
+    function addNode(nodeObjectOrArray, preventLayout?: boolean) {
         /** Define helper functions at the top */
         /**
          * Checks if object is an array:
@@ -1208,16 +1056,14 @@ function networkVizJS(documentId, userLayoutOptions) {
         if (isArray(nodeObjectOrArray)) {
             // Run through the array adding the nodes
             nodeObjectOrArray.forEach(addNodeObjectHelper);
-        }
-        else {
+        } else {
             addNodeObjectHelper(nodeObjectOrArray);
         }
         // Draw the changes, and either fire callback or pass it on to restart.
         if (!preventLayout) {
-            restart(callback);
-        }
-        else {
-            typeof callback === "function" && callback();
+            return restart();
+        } else {
+            return Promise.resolve();
         }
     }
 
@@ -1256,10 +1102,9 @@ function networkVizJS(documentId, userLayoutOptions) {
      * Adds a triplet object. Adds the node if it's not already added.
      * Otherwise it just adds the edge
      * @param {object} tripletObject
-     * @param callback
      * @param preventLayout
      */
-    function addTriplet(tripletObject, callback?, preventLayout?) {
+    function addTriplet(tripletObject, preventLayout?) {
         if (!tripletValidation(tripletObject)) {
             return Promise.reject("Invalid triplet");
         }
@@ -1283,11 +1128,12 @@ function networkVizJS(documentId, userLayoutOptions) {
                  * If a predicate type already has a color,
                  * it is not redefined.
                  */
+                    // arrowhead change
                 const edgeColor = typeof layoutOptions.edgeColor == "string" ? layoutOptions.edgeColor : layoutOptions.edgeColor(predicate);
                 if (!predicateTypeToColorMap.has(edgeColor)) {
                     predicateTypeToColorMap.set(edgeColor, true);
                     // Create an arrow head for the new color
-                    createColorArrow_1.default(defs, edgeColor);
+                    createColorArrow_1.default(defs, "#" + edgeColor);
                 }
                 /**
                  * Put the triplet into the LevelGraph database
@@ -1333,7 +1179,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                     createConstraint(tripletObject.predicate.constraint);
                 }
                 if (!preventLayout) {
-                    createNewLinks(callback);
+                    return createNewLinks();
                 }
                 return Promise.resolve();
             })
@@ -1346,10 +1192,9 @@ function networkVizJS(documentId, userLayoutOptions) {
     /**
      * Removes a triplet object. Silently fails if edge doesn't exist.
      * @param {object} tripletObject
-     * @param callback
-     * @returns {Promise<void>}
+     * @param preventLayout - prevent restart from occuring
      */
-    function removeTriplet(tripletObject, callback) {
+    function removeTriplet(tripletObject, preventLayout?: boolean) {
         if (!tripletValidation(tripletObject)) {
             return;
         }
@@ -1368,7 +1213,9 @@ function networkVizJS(documentId, userLayoutOptions) {
                 removeConstraint(tripletObject.predicate.constraint);
             }
             simulation.stop();
-            createNewLinks(callback);
+            if (!preventLayout) {
+                return createNewLinks();
+            }
         });
     }
 
@@ -1426,8 +1273,11 @@ function networkVizJS(documentId, userLayoutOptions) {
                     }
                     simulation.stop();
                     nodes.splice(nodeIndex, 1);
+                    if (nodeMap.get(nodeHash).parent) {
+                        unGroup({ nodes: [nodeHash] }, true);
+                    }
                     nodeMap.delete(nodeHash);
-                    createNewLinks(callback);
+                    createNewLinks();
                     return;
                 }
                 tripletsDB.del([...l1, ...l2], function (err) {
@@ -1448,7 +1298,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                     simulation.stop();
                     nodes.splice(nodeIndex, 1);
                     nodeMap.delete(nodeHash);
-                    createNewLinks(callback);
+                    createNewLinks();
                 });
             });
         });
@@ -1458,8 +1308,16 @@ function networkVizJS(documentId, userLayoutOptions) {
      * Function that fires when a node is clicked.
      * @param {function} selectNodeFunc
      */
-    function setSelectNode(selectNodeFunc) {
+    function setClickNode(selectNodeFunc) {
         layoutOptions.clickNode = selectNodeFunc;
+    }
+
+    /**
+     * Function that fires when a node is double clicked.
+     * @param {function} selectNodeFunc
+     */
+    function setDblClickNode(selectNodeFunc) {
+        layoutOptions.dblclickNode = selectNodeFunc;
     }
 
     /**
@@ -1486,8 +1344,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                 predicateArray.forEach((d, i) => {
                     d[prop] = values[i];
                 });
-            }
-            else {
+            } else {
                 predicateArray.forEach(d => {
                     d[prop] = values[0];
                 });
@@ -1497,6 +1354,26 @@ function networkVizJS(documentId, userLayoutOptions) {
         switch (prop) {
             case "text": {
                 editEdgeHelper("text");
+                restart();
+                break;
+            }
+            case "arrow": {
+                editEdgeHelper("arrowhead");
+                restart();
+                break;
+            }
+            case "weight": {
+                editEdgeHelper("strokeWidth");
+                restart();
+                break;
+            }
+            case "dash": {
+                editEdgeHelper("strokeDasharray");
+                restart();
+                break;
+            }
+            case "color": {
+                editEdgeHelper("stroke");
                 restart();
                 break;
             }
@@ -1544,8 +1421,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                 nodeArray.forEach((d, i) => {
                     d[prop] = values[i];
                 });
-            }
-            else {
+            } else {
                 nodeArray.forEach(d => {
                     d[prop] = values[0];
                 });
@@ -1557,11 +1433,11 @@ function networkVizJS(documentId, userLayoutOptions) {
                 idArray.forEach((id, i) => {
                     if (multipleValues) {
                         node.filter(d => d.id === id).select("path").attr("fill", values[i]);
-                    }
-                    else {
+                    } else {
                         node.filter(d => d.id === id).select("path").attr("fill", values[0]);
                     }
                 });
+                // TODO either make colour change +text here or in updatestyles, not both.
                 updateStyles();
                 break;
             }
@@ -1571,8 +1447,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                 idArray.forEach((id, i) => {
                     if (multipleValues) {
                         node.filter(d => d.id === id).select("path").attr("d", shapePaths[i]);
-                    }
-                    else {
+                    } else {
                         node.filter(d => d.id === id).select("path").attr("d", shapePaths[0]);
                     }
                 });
@@ -1601,7 +1476,11 @@ function networkVizJS(documentId, userLayoutOptions) {
             }
             default: {
                 editNodeHelper(prop);
-                console.warn("Caution. You are modifying a new or unknown property: %s.", action.property);
+                restart();
+                const list = ["x", "y"];
+                if (!list.includes(prop)) {
+                    console.warn("Caution. You are modifying a new or unknown property: %s.", action.property);
+                }
             }
         }
     }
@@ -1630,151 +1509,131 @@ function networkVizJS(documentId, userLayoutOptions) {
         layoutOptions.mouseOutNode = mouseOutCallback;
     }
 
-    // Function called when mousedown on node.
+    /**
+     * Function called when mousedown on node.
+     * @param mouseDownCallback - callback function
+     */
     function setMouseDown(mouseDownCallback) {
         layoutOptions.mouseDownNode = mouseDownCallback;
     }
 
     /**
-     * Merges a node into another group.
-     * If this node was in another group previously it removes it from the prior group.
+     * Add a node or a group to a group
+     * @param group - target group, either an existing group, or a new group to create
+     * @param children - object containing nodes and/or groups property. they are arrays of ID values
+     * @param preventLayout - prevent layout restart from occuring
      */
-    function mergeNodeToGroup(nodeInGroupHash, nodeToMergeHash, callback) {
-        console.error("THIS FEATURE IS NOT READY");
-        console.error("USE AT YOUR OWN RISK!");
-        /**
-         * Groups need to be defined using indexes.
-         */
-        let indexOfGroupNode = -1;
-        let indexOfNodeToMerge = -1;
-        for (let i = 0; i < nodes.length; i++) {
-            if (nodes[i].hash == nodeInGroupHash) {
-                indexOfGroupNode = i;
-            }
-            if (nodes[i].hash == nodeToMergeHash) {
-                indexOfNodeToMerge = i;
-            }
-            if (indexOfGroupNode !== -1 && indexOfNodeToMerge !== -1) {
-                break;
+    function addToGroup(group, children: { nodes?: string[], groups?: string[] }, preventLayout?: boolean) {
+        const nodeId = children.nodes;
+        const subGroupId = children.groups;
+        // check minimum size
+        if (nodeId.length === 0 && (subGroupId && subGroupId.length <= 1)) {
+            throw new Error("Minimum 1 node or two subgroups");
+        }
+        // check nodes
+        const nodeIndices: number[] = nodeId.map(id => nodes.findIndex(d => d.id === id));
+        if (!nodeIndices.every(i => i >= 0)) {
+            throw new Error("One or more nodes do not exist. Check node hash is correct");
+        }
+        // check subGroups
+        let groupIndices = [];
+        if (subGroupId) {
+            groupIndices = subGroupId.map(id => groups.findIndex(g => g.id === id));
+            if (!groupIndices.every(i => i < groups.length && i >= 0)) {
+                throw new Error("One or more groups do not exist.");
             }
         }
-        // Verify that the initial node exists.
-        if (indexOfGroupNode == -1) {
-            return console.error("You're trying to merge with a node that doesn't exist. Check that the node hash is correct.");
+
+        const nodesWithParentsID = nodeId.filter(id => nodeMap.get(id).parent);
+        if (nodesWithParentsID.length > 0) {
+            unGroup({ nodes: nodesWithParentsID }, true);
         }
-        if (indexOfNodeToMerge == -1) {
-            return console.error("The node you are trying to merge doesn't exist. Check the node hash is correct or add the node to the graph.");
-        }
-        // Find the set that the merge node is part of.
-        // Also remove the node we're merging from any sets it might be in.
-        let indexInSets = -1;
-        groupByHashes.forEach((set, index) => {
-            if (set.has(nodeInGroupHash)) {
-                indexInSets = index;
-                set.add(nodeToMergeHash);
-            }
-            if (set.has(nodeToMergeHash) && !set.has(nodeInGroupHash)) {
-                set.delete(nodeToMergeHash);
-            }
-        });
-        if (indexInSets === -1) {
-            // Create a new grouping.
-            groupByHashes.push(new Set([nodeToMergeHash, nodeInGroupHash]));
-        }
+
+
+        // get target group, if does not exist, create new group
         simulation.stop();
-        // Here we create a new group object with the updated group unions.
-        const newGroupObject = [];
-        groupByHashes.forEach(set => {
-            const indexOfSet = [];
-            const setArray = [...set];
-            let nodeIndex;
-            for (let i = 0; i < setArray.length; i++) {
-                nodeIndex = nodeMap.get(setArray[i]).index;
-                indexOfSet.push(nodeIndex);
+        const groupId = typeof (group) === "string" ? group : group.id;
+        let groupObj = groupMap.get(groupId);
+        if (!groupObj) {
+            groupObj = {
+                id: groupId,
+                leaves: [],
+                groups: [],
+                data: group.data ? group.data : { color: layoutOptions.groupFillColor(), }
+            };
+            groups.push(groupObj);
+            groupMap.set(groupId, groupObj);
+        } else {
+            if (!groupObj.leaves) {
+                groupObj.leaves = [];
             }
-            // Create and push an object with the indexes of the nodes.
-            newGroupObject.push({ leaves: indexOfSet });
+            if (!groupObj.groups) {
+                groupObj.groups = [];
+            }
+        }
+        groupObj.leaves = groupObj.leaves.concat(nodeIndices);
+        groupObj.groups = groupObj.groups.concat(groupIndices);
+        if (!preventLayout) {
+            if (groupObj.data.text) {
+                return restart().then(() => repositionGroupText());
+            }
+            return restart();
+        } else {
+            return Promise.resolve();
+        }
+    }
+
+    /**
+     * Remove a group or node from a group
+     * @param children - object containing nodes and/or groups property. they are arrays of ID values
+     * @param preventLayout - prevent layout restart from occuring
+     */
+    function unGroup(children: { nodes?: string[], groups?: string[] } | [{ nodes?: string[], groups?: string[] }], preventLayout?: boolean) {
+        simulation.stop();
+        const childArray = Array.isArray(children) ? children : [children];
+        childArray.forEach(child => {
+            if (child.nodes) {
+                // remove nodes from groups
+                const leaves = child.nodes.map(id => nodeMap.get(id));
+                leaves.forEach(d => {
+                    if (d.parent) {
+                        d.parent.leaves = d.parent.leaves.filter(leaf => leaf.id !== d.id);
+                        delete d.parent;
+                    }
+                });
+            }
+            if (child.groups) {
+                // remove groups from groups
+                const subGroups = child.groups.map(id => {
+                    const i = groups.findIndex(g => g.id === id);
+                    return groups[i];
+                });
+                subGroups.forEach(g => {
+                    if (g.parent) {
+                        g.parent.groups = g.parent.groups.filter(sibling => sibling.id !== g.id);
+                    }
+                });
+            }
         });
-        groups = newGroupObject;
-        restart(callback);
-    }
 
-    function deleteEdgeHoverMenu(d, me) {
-        const e = d3.event;
-        e.preventDefault();
-        // const element = d3.select(me);
-        const parent = d3.select(me.parentNode);
-        // const mouse = d3.mouse(me);
-        // console.log(me)
-        // const mosX = mouse[0];
-        // var mosY = mouse[1];
-        // console.log(mosX, mouse)
-        // if (mosY < -15) {
-        hoverMenuRemoveIcons(parent);
-        // }
-    }
-
-    function addEdgeHoverMenu(d, me) {
-        hoverMenuRemoveIcons();
-        const element = d3.select(me);
-        const parent = d3.select(me.parentNode);
-        const textBox = element.select("text");
-        const textFo = element.select(".edge-foreign-object");
-        const array = simulation.routeEdge(d, undefined, undefined);
-        const middleIndex = Math.floor(array.length / 2) - 1;
-        const xMid = (array[middleIndex].x + array[middleIndex + 1].x) / 2;
-        const yMid = (array[middleIndex].y + array[middleIndex + 1].y) / 2;
-        const textWidth = textBox.node().offsetWidth;
-        const textHeight = textBox.node().offsetHeight; // NB when text is empty = 26 i.e. 1 line height
-        const menuGroup = element.insert("g", "foreignObject")
-            .attr("class", "edge-hover-menu");
-        menuGroup.append("rect")
-            .classed("menu-hover-box", true)
-            .attr("width", () => {
-                const minWidth = 30;
-                return textWidth < minWidth ? minWidth : textWidth;
-            })
-            .attr("height", () => {
-                const minHeight = 30;
-                return textHeight === 0 ? 10 + minHeight : textHeight + minHeight;
-            })
-            .attr("x", function () {
-                const width = d3.select(this).attr("width");
-                return xMid - width / 2;
-            })
-            .attr("y", yMid - textHeight / 2)
-            .attr("fill", "rgba(0,0,0,0)")
-            .attr("stroke", "none")
-            .on("mouseover", function () {
-                layoutOptions.mouseOverRadial && layoutOptions.mouseOverRadial(d);
-            })
-            .on("mouseleave", function () {
-                layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial(d);
-            });
-        // CREATE TRASH ICON
-        const foTrash = menuGroup
-            .append("foreignObject")
-            .attr("x", xMid - 11)
-            .attr("y", yMid + textHeight / 2 + 5)
-            .attr("class", "menu-trash")
-            .attr("width", 22)
-            .attr("height", 27)
-            .style("overflow", "visible")
-            .on("click", function () {
-                const e = d3.event;
-                e.stopPropagation();
-                const edge = {
-                    subject: d.source,
-                    predicate: d.predicate,
-                    object: d.target
-                };
-                layoutOptions.edgeRemove && layoutOptions.edgeRemove(edge);
-                layoutOptions.mouseOutRadial && layoutOptions.mouseOutRadial(d);
-            });
-        const trash = foTrash.append("xhtml:div")
-            .append("div")
-            .attr("class", "icon-wrapper")
-            .html("<i class=\"fa fa-trash-o custom-icon\"></i>");
+        // remove empty groups
+        groups = groups.filter(g => {
+            if (g.leaves.length === 0 && g.groups.length <= 1) {
+                groupMap.delete(g.id);
+                // empty group is a child of another group
+                if (g.parent) {
+                    g.parent.groups = g.parent.groups.filter(subgroup => subgroup.id !== g.id);
+                }
+                return false;
+            } else {
+                return true;
+            }
+        });
+        if (!preventLayout) {
+            return restart();
+        } else {
+            return Promise.resolve();
+        }
     }
 
     /**
@@ -1817,79 +1676,111 @@ function networkVizJS(documentId, userLayoutOptions) {
      * scheme: triplets: subj:hash-predicateType-obj:hash[]
      *         nodes: hash[]
      */
-    const saveGraph = (callback) => {
+    function saveGraph() {
         d3.selectAll(".radial-menu").remove();
         const svg = d3.select(".svg-content-responsive");
         const t = d3.zoomIdentity.translate(0, 0).scale(1);
         svg.call(zoom.transform, t);
         layoutOptions.zoomScale(1);
-        tripletsDB.get({}, (err, l) => {
-            const saved = JSON.stringify({
-                triplets: l.map(v => ({ subject: v.subject, predicate: v.predicate, object: v.object })),
-                nodes: nodes.map(v => ({ hash: v.hash, x: v.x, y: v.y }))
+
+        return new Promise((resolve, reject) => {
+            tripletsDB.get({}, (err, l) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    const saved = JSON.stringify({
+                        triplets: l.map(v => ({ subject: v.subject, predicate: v.predicate, object: v.object })),
+                        nodes: nodes.map(v => ({ hash: v.hash, x: v.x, y: v.y })),
+                        groups: groups.map(v => ({
+                            children: {
+                                nodes: v.leaves.map(d => d.id),
+                                groups: v.groups.map(g => g.id),
+                            },
+                            id: v.id,
+                            data: v.data
+                        })),
+                    });
+                    resolve(saved);
+                }
             });
-            callback(saved);
         });
-    };
+    }
 
     function dragged(d) {
-        if (!layoutOptions.nodeToPin(d) || !layoutOptions.snapToAlignment) {
+        const e = d3.event;
+        // prevent drag whilst image resizing
+        if (internalOptions.isImgResize) {
+            d.py = d.y;
+            d.px = d.x;
             return;
         }
-        alignElements.remove();
-        const e = d3.event;
-        const threshold = layoutOptions.snapThreshold;
-        const xOffset = d.width / 2;
-        const yOffset = d.height / 2;
-        const gridX = new Map();
-        const gridY = new Map();
-        const gridCX = new Map();
-        const gridCY = new Map();
-        const dBoundsInflate = d.bounds.inflate(1);
-        const xOverlapNodes = [];
-        const yOverlapNodes = [];
-        const foundAlignment = {
-            x: false,
-            xDist: false,
-            y: false,
-            yDist: false,
-        };
+        // Multiple item drag
+        if (layoutOptions.isSelect && layoutOptions.isSelect() && layoutOptions.selection().nodes.size > 1) {
+            const { dx, dy } = e;
+            [...layoutOptions.selection().nodes.values()]
+                .forEach(x => {
+                    if (x.id !== d.id) {
+                        x.px += dx;
+                        x.py += dy;
+                    }
+                });
+            return;
+        }
+        // Snap to alignment
+        if (layoutOptions.nodeToPin(d) && layoutOptions.snapToAlignment) {
+            alignElements.remove();
+            const threshold = layoutOptions.snapThreshold;
+            const xOffset = d.width / 2;
+            const yOffset = d.height / 2;
+            const gridX = new Map();
+            const gridY = new Map();
+            const gridCX = new Map();
+            const gridCY = new Map();
+            const dBoundsInflate = d.bounds.inflate(1);
+            const xOverlapNodes = [];
+            const yOverlapNodes = [];
+            const foundAlignment = {
+                x: false,
+                xDist: false,
+                y: false,
+                yDist: false,
+            };
 
-        const mapHelper = (mapObj, key, value) => {
-            value = [].concat(value);
-            mapObj.has(key) ? mapObj.set(key, mapObj.get(key).concat([value])) : mapObj.set(key, [value]);
-        };
+            const mapHelper = (mapObj, key, value) => {
+                value = [].concat(value);
+                mapObj.has(key) ? mapObj.set(key, mapObj.get(key).concat([value])) : mapObj.set(key, [value]);
+            };
 
-        nodes.forEach((node) => {
-            if (node.hash !== d.hash) {
-                // create map of possible alignment coordinates
-                const yCoords = [node.bounds.y, node.bounds.Y];
-                const xCoords = [node.bounds.x, node.bounds.X];
-                xCoords.forEach(x => mapHelper(gridX, Math.round(x * 2) / 2, yCoords));
-                yCoords.forEach(y => mapHelper(gridY, Math.round(y * 2) / 2, xCoords));
-                mapHelper(gridCX, Math.round(node.bounds.cx() * 2) / 2, yCoords);
-                mapHelper(gridCY, Math.round(node.bounds.cy() * 2) / 2, xCoords);
+            nodes.forEach((node) => {
+                if (node.hash !== d.hash) {
+                    // create map of possible alignment coordinates
+                    const yCoords = [node.bounds.y, node.bounds.Y];
+                    const xCoords = [node.bounds.x, node.bounds.X];
+                    xCoords.forEach(x => mapHelper(gridX, Math.round(x * 2) / 2, yCoords));
+                    yCoords.forEach(y => mapHelper(gridY, Math.round(y * 2) / 2, xCoords));
+                    mapHelper(gridCX, Math.round(node.bounds.cx() * 2) / 2, yCoords);
+                    mapHelper(gridCY, Math.round(node.bounds.cy() * 2) / 2, xCoords);
 
-                // find all overlapping node boundaries
-                if (node.bounds.overlapX(dBoundsInflate) > 0) {
-                    xOverlapNodes.push(node.bounds);
+                    // find all overlapping node boundaries
+                    if (node.bounds.overlapX(dBoundsInflate) > 0) {
+                        xOverlapNodes.push(node.bounds);
+                    }
+                    if (node.bounds.overlapY(dBoundsInflate) > 0) {
+                        yOverlapNodes.push(node.bounds);
+                    }
                 }
-                if (node.bounds.overlapY(dBoundsInflate) > 0) {
-                    yOverlapNodes.push(node.bounds);
-                }
-            }
-        });
+            });
 
-        const findAligns = ({ centreMap, edgeMap, offset, threshold, position }) => {
-            // check for centre alignments
-            let alignments = [... centreMap.entries()].reduce((acc, curr) => {
-                if (curr[0] > position - threshold && curr[0] < position + threshold && curr[1].length > acc.array.length) {
-                    return { coord: curr[0], array: curr[1], offset: 0 };
-                }
-                return acc;
-            }, { coord: undefined, array: [], offset: undefined });
-            // if (!alignments.coord) { // If not centre aligned check for edge alignment
-                alignments = [... edgeMap.entries()].reduce((acc, curr) => {
+            const findAligns = ({ centreMap, edgeMap, offset, threshold, position }) => {
+                // check for centre alignments
+                let alignments = [...centreMap.entries()].reduce((acc, curr) => {
+                    if (curr[0] > position - threshold && curr[0] < position + threshold && curr[1].length > acc.array.length) {
+                        return { coord: curr[0], array: curr[1], offset: 0 };
+                    }
+                    return acc;
+                }, { coord: undefined, array: [], offset: undefined });
+                // check for edge alignments
+                alignments = [...edgeMap.entries()].reduce((acc, curr) => {
                     if (curr[0] > position + offset - threshold && curr[0] < position + offset + threshold && curr[1].length > acc.array.length) {
                         return { coord: curr[0], array: curr[1], offset: offset };
                     }
@@ -1899,417 +1790,500 @@ function networkVizJS(documentId, userLayoutOptions) {
                     return acc;
 
                 }, alignments);
-            // }
-            return alignments;
-        };
-        const xAlign = findAligns({ centreMap: gridCX, edgeMap: gridX, offset: xOffset, threshold, position: e.x });
-        const yAlign = findAligns({ centreMap: gridCY, edgeMap: gridY, offset: yOffset, threshold, position: e.y });
-        if (xAlign.coord) { // if X alignment found
-            const yarr = xAlign.array.reduce((acc, curr) => acc.concat(curr), []);
-            alignElements.create("x", {
-                x: xAlign.coord,
-                X: xAlign.coord,
-                y: Math.min(...yarr, d.bounds.y) - 4,
-                Y: Math.max(...yarr, d.bounds.Y) + 4,
-            });
-            d.px = xAlign.coord - xAlign.offset;
-            foundAlignment.x = true;
-        }
-        if (yAlign.coord) { // if Y alignment found
-            const xarr = yAlign.array.reduce((acc, curr) => acc.concat(curr), []);
-            alignElements.create("y", {
-                x: Math.min(...xarr, d.bounds.x) - 4,
-                X: Math.max(...xarr, d.bounds.X) + 4,
-                y: yAlign.coord,
-                Y: yAlign.coord,
-            });
-            // +1 required otherwise nodes collide.
-            const offset = yAlign.offset === 0 ? 0 : yAlign.offset > 0 ? yAlign.offset + 1 : yAlign.offset - 1;
-            d.py = yAlign.coord - offset;
-            foundAlignment.y = true;
-        }
-
-        // Sort overlapping boundaries by position in increasing order
-        xOverlapNodes.sort((a, b) => (a.y - b.y));
-        yOverlapNodes.sort((a, b) => (a.x - b.x));
-
-        const findOverlapGroups = ({ bounds, splitThreshold, axis }) => {
-            const invAxis = axis === "X" ? "Y" : "X";
-            const overlapGroups = [];
-            let index: number = -1;
-            const visited: boolean[] = new Array(bounds.length).fill(false);
-            let tempArray = [];
-            let newNode = false;
-            for (let i = 0; i < bounds.length; i++) {
-                if (bounds[i][invAxis] < splitThreshold) {
-                    index = i;
-                }
-                if (visited.every(v => v)) {
-                    continue;
-                }
-                newNode = false;
-                if (!visited[i]) {
-                    newNode = true;
-                    visited[i] = true;
-                }
-                tempArray = [bounds[i]];
-                for (let j = i + 1; j < bounds.length; j++) {
-                    if ((axis === "X" && bounds[i].overlapX(bounds[j]) > 0) || (axis === "Y" && bounds[i].overlapY(bounds[j]) > 0)) {
-                        if (!visited[j]) {
-                            newNode = true;
-                            visited[j] = true;
-                        }
-                        tempArray.push(bounds[j]);
-                    }
-                }
-                if (newNode && tempArray.length > 1) {
-                    overlapGroups.push(tempArray);
-                }
+                return alignments;
+            };
+            const xAlign = findAligns({ centreMap: gridCX, edgeMap: gridX, offset: xOffset, threshold, position: e.x });
+            const yAlign = findAligns({ centreMap: gridCY, edgeMap: gridY, offset: yOffset, threshold, position: e.y });
+            if (xAlign.coord) { // if X alignment found
+                const yarr = xAlign.array.reduce((acc, curr) => acc.concat(curr), []);
+                alignElements.create("x", {
+                    x: xAlign.coord,
+                    X: xAlign.coord,
+                    y: Math.min(...yarr, d.bounds.y) - 4,
+                    Y: Math.max(...yarr, d.bounds.Y) + 4,
+                });
+                d.px = xAlign.coord - xAlign.offset;
+                foundAlignment.x = true;
             }
-            return { overlapGroups, index };
-        };
+            if (yAlign.coord) { // if Y alignment found
+                const xarr = yAlign.array.reduce((acc, curr) => acc.concat(curr), []);
+                alignElements.create("y", {
+                    x: Math.min(...xarr, d.bounds.x) - 4,
+                    X: Math.max(...xarr, d.bounds.X) + 4,
+                    y: yAlign.coord,
+                    Y: yAlign.coord,
+                });
+                // +1 required otherwise nodes collide.
+                const offset = yAlign.offset === 0 ? 0 : yAlign.offset > 0 ? yAlign.offset + 1 : yAlign.offset - 1;
+                d.py = yAlign.coord - offset;
+                foundAlignment.y = true;
+            }
 
-        const { overlapGroups: xOverlapGroups, index: xIndex } = findOverlapGroups({
-            bounds: xOverlapNodes,
-            splitThreshold: e.y - yOffset,
-            axis: "X",
-        });
-        const { overlapGroups: yOverlapGroups, index: yIndex } = findOverlapGroups({
-            bounds: yOverlapNodes,
-            splitThreshold: e.x - xOffset,
-            axis: "Y",
-        });
-        const dimensioningLines = {
-            projection: [],
-            dimension: [],
-        };
-        // If overlaps found in X axis
+            // Sort overlapping boundaries by position in increasing order
+            xOverlapNodes.sort((a, b) => (a.y - b.y));
+            yOverlapNodes.sort((a, b) => (a.x - b.x));
 
-        if (xOverlapGroups.length > 0) {
-            const xGaps = new Map();
-            xOverlapGroups.forEach((group) => {
-                for (let i = 1; i < group.length; i++) {
-                    mapHelper(xGaps, group[i].y - group[i - 1].Y, [group[i - 1], group[i]]);
-                }
-            });
-
-            const dimensionLineHelper = (pair) => {
-                const x = Math.max(...pair.reduce((acc, curr) => acc.concat(curr.X), []));
-                dimensioningLines.projection.push({
-                    x: pair[0].X,
-                    X: x + 12,
-                    y: pair[0].Y,
-                    Y: pair[0].Y,
-                });
-                dimensioningLines.projection.push({
-                    x: pair[1].X,
-                    X: x + 12,
-                    y: pair[1].y,
-                    Y: pair[1].y,
-                });
-                dimensioningLines.dimension.push({
-                    x: x + 9,
-                    X: x + 9,
-                    y: pair[0].Y,
-                    Y: pair[1].y,
-                });
-            };
-
-            const dimLinesBelow = (i, g) => {
-                const X = Math.max(d.bounds.X, xOverlapNodes[i].X);
-                // projection line on target node
-                dimensioningLines.projection.push({
-                    x: d.bounds.X,
-                    X: X + 12,
-                    y: xOverlapNodes[i].y - g,
-                    Y: xOverlapNodes[i].y - g,
-                });
-                // projection line on neighbour node
-                dimensioningLines.projection.push({
-                    x: xOverlapNodes[i].X,
-                    X: X + 12,
-                    y: xOverlapNodes[i].y,
-                    Y: xOverlapNodes[i].y,
-                });
-                // dimension line between projection lines
-                dimensioningLines.dimension.push({
-                    x: X + 9,
-                    X: X + 9,
-                    y: xOverlapNodes[i].y - g,
-                    Y: xOverlapNodes[i].y,
-                });
-            };
-
-            const dimLinesAbove = (i, g) => {
-                const X = Math.max(d.bounds.X, xOverlapNodes[i].X);
-                // projection line on target node
-                dimensioningLines.projection.push({
-                    x: d.bounds.X,
-                    X: X + 12,
-                    y: xOverlapNodes[i].Y + g,
-                    Y: xOverlapNodes[i].Y + g,
-                });
-                // projection line on neighbour node
-                dimensioningLines.projection.push({
-                    x: xOverlapNodes[i].X,
-                    X: X + 12,
-                    y: xOverlapNodes[i].Y,
-                    Y: xOverlapNodes[i].Y,
-                });
-                // dimension line between projection lines
-                dimensioningLines.dimension.push({
-                    x: X + 9,
-                    X: X + 9,
-                    y: xOverlapNodes[i].Y + g,
-                    Y: xOverlapNodes[i].Y,
-                });
-            };
-
-            xGaps.forEach((b, g) => {
-                let alignFound = false;
-                if (xIndex > -1) {
-                    if (xOverlapNodes[xIndex].Y + g > e.y - yOffset - threshold && xOverlapNodes[xIndex].Y + g < e.y - yOffset + threshold) {
-                        if (!foundAlignment.y || d.py === xOverlapNodes[xIndex].Y + g + yOffset) {
-                            d.py = xOverlapNodes[xIndex].Y + g + yOffset;
-                            dimLinesAbove(xIndex, g);
-                            alignFound = true;
-                            foundAlignment.yDist = true;
-                        }
-
+            const findOverlapGroups = ({ bounds, splitThreshold, axis }) => {
+                const invAxis = axis === "X" ? "Y" : "X";
+                const overlapGroups = [];
+                let index: number = -1;
+                const visited: boolean[] = new Array(bounds.length).fill(false);
+                let tempArray = [];
+                let newNode = false;
+                for (let i = 0; i < bounds.length; i++) {
+                    if (bounds[i][invAxis] < splitThreshold) {
+                        index = i;
                     }
-                }
-                if (xIndex < xOverlapNodes.length - 1) {
-                    if (xOverlapNodes[xIndex + 1].y - g > e.y + yOffset - threshold && xOverlapNodes[xIndex + 1].y - g < e.y + yOffset + threshold) {
-                        if (!foundAlignment.y || d.py === xOverlapNodes[xIndex + 1].y - g - yOffset) {
-                            d.py = xOverlapNodes[xIndex + 1].y - g - yOffset;
-                            dimLinesBelow(xIndex + 1, g);
-                            alignFound = true;
-                            foundAlignment.yDist = true;
+                    if (visited.every(v => v)) {
+                        continue;
+                    }
+                    newNode = false;
+                    if (!visited[i]) {
+                        newNode = true;
+                        visited[i] = true;
+                    }
+                    tempArray = [bounds[i]];
+                    for (let j = i + 1; j < bounds.length; j++) {
+                        if ((axis === "X" && bounds[i].overlapX(bounds[j]) > 0) || (axis === "Y" && bounds[i].overlapY(bounds[j]) > 0)) {
+                            if (!visited[j]) {
+                                newNode = true;
+                                visited[j] = true;
+                            }
+                            tempArray.push(bounds[j]);
                         }
                     }
+                    if (newNode && tempArray.length > 1) {
+                        overlapGroups.push(tempArray);
+                    }
                 }
-                if (alignFound) {
-                    b.forEach(pair => dimensionLineHelper(pair));
-                    alignElements.create("yDist", dimensioningLines);
-                }
+                return { overlapGroups, index };
+            };
+
+            const { overlapGroups: xOverlapGroups, index: xIndex } = findOverlapGroups({
+                bounds: xOverlapNodes,
+                splitThreshold: e.y - yOffset,
+                axis: "X",
             });
-            // if target node is in middle
-            if (xIndex >= 0 && xIndex < xOverlapNodes.length - 1 && !foundAlignment.yDist) {
-                const midpoint = (xOverlapNodes[xIndex + 1].y + xOverlapNodes[xIndex].Y) / 2;
-                const y = midpoint - yOffset;
-                const Y = midpoint + yOffset;
-                if (midpoint > e.y - threshold && midpoint < e.y + threshold && (!foundAlignment.y || d.py === midpoint)) {
-                    d.py = midpoint;
-                    const X = Math.max(d.bounds.X, xOverlapNodes[xIndex].X, xOverlapNodes[xIndex + 1].X);
-                    // projection line on target node bottom
+            const { overlapGroups: yOverlapGroups, index: yIndex } = findOverlapGroups({
+                bounds: yOverlapNodes,
+                splitThreshold: e.x - xOffset,
+                axis: "Y",
+            });
+            const dimensioningLines = {
+                projection: [],
+                dimension: [],
+            };
+            // If overlaps found in X axis
+
+            if (xOverlapGroups.length > 0) {
+                const xGaps = new Map();
+                xOverlapGroups.forEach((group) => {
+                    for (let i = 1; i < group.length; i++) {
+                        mapHelper(xGaps, group[i].y - group[i - 1].Y, [group[i - 1], group[i]]);
+                    }
+                });
+
+                const dimensionLineHelper = (pair) => {
+                    const x = Math.max(...pair.reduce((acc, curr) => acc.concat(curr.X), []));
+                    dimensioningLines.projection.push({
+                        x: pair[0].X,
+                        X: x + 12,
+                        y: pair[0].Y,
+                        Y: pair[0].Y,
+                    });
+                    dimensioningLines.projection.push({
+                        x: pair[1].X,
+                        X: x + 12,
+                        y: pair[1].y,
+                        Y: pair[1].y,
+                    });
+                    dimensioningLines.dimension.push({
+                        x: x + 9,
+                        X: x + 9,
+                        y: pair[0].Y,
+                        Y: pair[1].y,
+                    });
+                };
+
+                const dimLinesBelow = (i, g) => {
+                    const X = Math.max(d.bounds.X, xOverlapNodes[i].X);
+                    // projection line on target node
                     dimensioningLines.projection.push({
                         x: d.bounds.X,
                         X: X + 12,
-                        y: Y,
-                        Y: Y,
+                        y: xOverlapNodes[i].y - g,
+                        Y: xOverlapNodes[i].y - g,
                     });
-                    // projection line on top neighbour node
+                    // projection line on neighbour node
                     dimensioningLines.projection.push({
-                        x: xOverlapNodes[xIndex].X,
+                        x: xOverlapNodes[i].X,
                         X: X + 12,
-                        y: xOverlapNodes[xIndex].Y,
-                        Y: xOverlapNodes[xIndex].Y,
+                        y: xOverlapNodes[i].y,
+                        Y: xOverlapNodes[i].y,
                     });
-                    // dimension node above
+                    // dimension line between projection lines
                     dimensioningLines.dimension.push({
                         x: X + 9,
                         X: X + 9,
-                        y: y,
-                        Y: xOverlapNodes[xIndex].Y,
+                        y: xOverlapNodes[i].y - g,
+                        Y: xOverlapNodes[i].y,
                     });
-                    // projection line on target node top
+                };
+
+                const dimLinesAbove = (i, g) => {
+                    const X = Math.max(d.bounds.X, xOverlapNodes[i].X);
+                    // projection line on target node
                     dimensioningLines.projection.push({
                         x: d.bounds.X,
                         X: X + 12,
-                        y: y,
-                        Y: y,
+                        y: xOverlapNodes[i].Y + g,
+                        Y: xOverlapNodes[i].Y + g,
                     });
-                    // projection line on bottom neighbour  node
+                    // projection line on neighbour node
                     dimensioningLines.projection.push({
-                        x: xOverlapNodes[xIndex + 1].X,
+                        x: xOverlapNodes[i].X,
                         X: X + 12,
-                        y: xOverlapNodes[xIndex + 1].y,
-                        Y: xOverlapNodes[xIndex + 1].y,
+                        y: xOverlapNodes[i].Y,
+                        Y: xOverlapNodes[i].Y,
                     });
-                    // dimension node below
+                    // dimension line between projection lines
                     dimensioningLines.dimension.push({
                         x: X + 9,
                         X: X + 9,
-                        y: Y,
-                        Y: xOverlapNodes[xIndex + 1].y,
+                        y: xOverlapNodes[i].Y + g,
+                        Y: xOverlapNodes[i].Y,
                     });
-                    alignElements.create("yDist", dimensioningLines);
+                };
+
+                xGaps.forEach((b, g) => {
+                    let alignFound = false;
+                    if (xIndex > -1) {
+                        if (xOverlapNodes[xIndex].Y + g > e.y - yOffset - threshold && xOverlapNodes[xIndex].Y + g < e.y - yOffset + threshold) {
+                            if (!foundAlignment.y || d.py === xOverlapNodes[xIndex].Y + g + yOffset) {
+                                d.py = xOverlapNodes[xIndex].Y + g + yOffset;
+                                dimLinesAbove(xIndex, g);
+                                alignFound = true;
+                                foundAlignment.yDist = true;
+                            }
+
+                        }
+                    }
+                    if (xIndex < xOverlapNodes.length - 1) {
+                        if (xOverlapNodes[xIndex + 1].y - g > e.y + yOffset - threshold && xOverlapNodes[xIndex + 1].y - g < e.y + yOffset + threshold) {
+                            if (!foundAlignment.y || d.py === xOverlapNodes[xIndex + 1].y - g - yOffset) {
+                                d.py = xOverlapNodes[xIndex + 1].y - g - yOffset;
+                                dimLinesBelow(xIndex + 1, g);
+                                alignFound = true;
+                                foundAlignment.yDist = true;
+                            }
+                        }
+                    }
+                    if (alignFound) {
+                        b.forEach(pair => dimensionLineHelper(pair));
+                        alignElements.create("yDist", dimensioningLines);
+                    }
+                });
+                // if target node is in middle
+                if (xIndex >= 0 && xIndex < xOverlapNodes.length - 1 && !foundAlignment.yDist) {
+                    const midpoint = (xOverlapNodes[xIndex + 1].y + xOverlapNodes[xIndex].Y) / 2;
+                    const y = midpoint - yOffset;
+                    const Y = midpoint + yOffset;
+                    if (midpoint > e.y - threshold && midpoint < e.y + threshold && (!foundAlignment.y || d.py === midpoint)) {
+                        d.py = midpoint;
+                        const X = Math.max(d.bounds.X, xOverlapNodes[xIndex].X, xOverlapNodes[xIndex + 1].X);
+                        // projection line on target node bottom
+                        dimensioningLines.projection.push({
+                            x: d.bounds.X,
+                            X: X + 12,
+                            y: Y,
+                            Y: Y,
+                        });
+                        // projection line on top neighbour node
+                        dimensioningLines.projection.push({
+                            x: xOverlapNodes[xIndex].X,
+                            X: X + 12,
+                            y: xOverlapNodes[xIndex].Y,
+                            Y: xOverlapNodes[xIndex].Y,
+                        });
+                        // dimension node above
+                        dimensioningLines.dimension.push({
+                            x: X + 9,
+                            X: X + 9,
+                            y: y,
+                            Y: xOverlapNodes[xIndex].Y,
+                        });
+                        // projection line on target node top
+                        dimensioningLines.projection.push({
+                            x: d.bounds.X,
+                            X: X + 12,
+                            y: y,
+                            Y: y,
+                        });
+                        // projection line on bottom neighbour  node
+                        dimensioningLines.projection.push({
+                            x: xOverlapNodes[xIndex + 1].X,
+                            X: X + 12,
+                            y: xOverlapNodes[xIndex + 1].y,
+                            Y: xOverlapNodes[xIndex + 1].y,
+                        });
+                        // dimension node below
+                        dimensioningLines.dimension.push({
+                            x: X + 9,
+                            X: X + 9,
+                            y: Y,
+                            Y: xOverlapNodes[xIndex + 1].y,
+                        });
+                        alignElements.create("yDist", dimensioningLines);
+                    }
                 }
+
             }
-
-        }
-        if (yOverlapGroups.length > 0) {
-            const yGaps = new Map();
-            yOverlapGroups.forEach((group) => {
-                for (let i = 1; i < group.length; i++) {
-                    mapHelper(yGaps, group[i].x - group[i - 1].X, [group[i - 1], group[i]]);
-                }
-            });
-
-            const dimensionLineHelper = (pair) => {
-                const y = Math.max(...pair.reduce((acc, curr) => acc.concat(curr.Y), []));
-                dimensioningLines.projection.push({
-                    y: pair[0].Y,
-                    Y: y + 12,
-                    x: pair[0].X,
-                    X: pair[0].X,
-                });
-                dimensioningLines.projection.push({
-                    y: pair[1].Y,
-                    Y: y + 12,
-                    x: pair[1].x,
-                    X: pair[1].x,
-                });
-                dimensioningLines.dimension.push({
-                    y: y + 9,
-                    Y: y + 9,
-                    x: pair[0].X,
-                    X: pair[1].x,
-                });
-            };
-
-            const dimLinesRight = (i, g) => {
-                const Y = Math.max(d.bounds.Y, yOverlapNodes[i].Y);
-                // projection line on target node
-                dimensioningLines.projection.push({
-                    y: d.bounds.Y,
-                    Y: Y + 12,
-                    x: yOverlapNodes[i].x - g,
-                    X: yOverlapNodes[i].x - g,
-                });
-                // projection line on neighbour node
-                dimensioningLines.projection.push({
-                    y: yOverlapNodes[i].Y,
-                    Y: Y + 12,
-                    x: yOverlapNodes[i].x,
-                    X: yOverlapNodes[i].x,
-                });
-                // dimension line between projection lines
-                dimensioningLines.dimension.push({
-                    y: Y + 9,
-                    Y: Y + 9,
-                    x: yOverlapNodes[i].x - g,
-                    X: yOverlapNodes[i].x,
-                });
-            };
-
-            const dimLinesLeft = (i, g) => {
-                const Y = Math.max(d.bounds.Y, yOverlapNodes[i].Y);
-                // projection line on target node
-                dimensioningLines.projection.push({
-                    y: d.bounds.Y,
-                    Y: Y + 12,
-                    x: yOverlapNodes[i].X + g,
-                    X: yOverlapNodes[i].X + g,
-                });
-                // projection line on neighbour node
-                dimensioningLines.projection.push({
-                    y: yOverlapNodes[i].Y,
-                    Y: Y + 12,
-                    x: yOverlapNodes[i].X,
-                    X: yOverlapNodes[i].X,
-                });
-                // dimension line between projection lines
-                dimensioningLines.dimension.push({
-                    y: Y + 9,
-                    Y: Y + 9,
-                    x: yOverlapNodes[i].X + g,
-                    X: yOverlapNodes[i].X,
-                });
-            };
-
-            yGaps.forEach((b, g) => {
-                let alignFound = false;
-                if (yIndex > -1) {
-                    if (yOverlapNodes[yIndex].X + g > e.x - xOffset - threshold && yOverlapNodes[yIndex].X + g < e.x - xOffset + threshold) {
-                        if (!foundAlignment.x || d.px === yOverlapNodes[yIndex].X + g + xOffset) {
-                            d.px = yOverlapNodes[yIndex].X + g + xOffset;
-                            dimLinesLeft(yIndex, g);
-                            alignFound = true;
-                            foundAlignment.xDist = true;
-                        }
-
+            if (yOverlapGroups.length > 0) {
+                const yGaps = new Map();
+                yOverlapGroups.forEach((group) => {
+                    for (let i = 1; i < group.length; i++) {
+                        mapHelper(yGaps, group[i].x - group[i - 1].X, [group[i - 1], group[i]]);
                     }
-                }
-                if (yIndex < yOverlapNodes.length - 1) {
-                    if (yOverlapNodes[yIndex + 1].x - g > e.x + xOffset - threshold && yOverlapNodes[yIndex + 1].x - g < e.x + xOffset + threshold) {
-                        if (!foundAlignment.x || d.px === yOverlapNodes[yIndex + 1].x - g - xOffset) {
-                            d.px = yOverlapNodes[yIndex + 1].x - g - xOffset;
-                            dimLinesRight(yIndex + 1, g);
-                            alignFound = true;
-                            foundAlignment.xDist = true;
-                        }
-                    }
-                }
-                if (alignFound) {
-                    b.forEach(pair => dimensionLineHelper(pair));
-                    alignElements.create("xDist", dimensioningLines);
-                }
-            });
-            // if target node is in middle
-            if (yIndex >= 0 && yIndex < yOverlapNodes.length - 1 && !foundAlignment.xDist) {
-                const midpoint = (yOverlapNodes[yIndex + 1].x + yOverlapNodes[yIndex].X) / 2;
-                const x = midpoint - xOffset;
-                const X = midpoint + xOffset;
-                if (midpoint > e.x - threshold && midpoint < e.x + threshold && (!foundAlignment.x || d.px === midpoint)) {
-                    d.px = midpoint;
-                    const Y = Math.max(d.bounds.Y, yOverlapNodes[yIndex].Y, yOverlapNodes[yIndex + 1].Y);
-                    // projection line on target node bottom
+                });
+
+                const dimensionLineHelper = (pair) => {
+                    const y = Math.max(...pair.reduce((acc, curr) => acc.concat(curr.Y), []));
+                    dimensioningLines.projection.push({
+                        y: pair[0].Y,
+                        Y: y + 12,
+                        x: pair[0].X,
+                        X: pair[0].X,
+                    });
+                    dimensioningLines.projection.push({
+                        y: pair[1].Y,
+                        Y: y + 12,
+                        x: pair[1].x,
+                        X: pair[1].x,
+                    });
+                    dimensioningLines.dimension.push({
+                        y: y + 9,
+                        Y: y + 9,
+                        x: pair[0].X,
+                        X: pair[1].x,
+                    });
+                };
+
+                const dimLinesRight = (i, g) => {
+                    const Y = Math.max(d.bounds.Y, yOverlapNodes[i].Y);
+                    // projection line on target node
                     dimensioningLines.projection.push({
                         y: d.bounds.Y,
                         Y: Y + 12,
-                        x: X,
-                        X: X,
+                        x: yOverlapNodes[i].x - g,
+                        X: yOverlapNodes[i].x - g,
                     });
-                    // projection line on top neighbour node
+                    // projection line on neighbour node
                     dimensioningLines.projection.push({
-                        y: yOverlapNodes[yIndex].Y,
+                        y: yOverlapNodes[i].Y,
                         Y: Y + 12,
-                        x: yOverlapNodes[yIndex].X,
-                        X: yOverlapNodes[yIndex].X,
+                        x: yOverlapNodes[i].x,
+                        X: yOverlapNodes[i].x,
                     });
-                    // dimension node above
+                    // dimension line between projection lines
                     dimensioningLines.dimension.push({
                         y: Y + 9,
                         Y: Y + 9,
-                        x: x,
-                        X: yOverlapNodes[yIndex].X,
+                        x: yOverlapNodes[i].x - g,
+                        X: yOverlapNodes[i].x,
                     });
-                    // projection line on target node top
+                };
+
+                const dimLinesLeft = (i, g) => {
+                    const Y = Math.max(d.bounds.Y, yOverlapNodes[i].Y);
+                    // projection line on target node
                     dimensioningLines.projection.push({
                         y: d.bounds.Y,
                         Y: Y + 12,
-                        x: x,
-                        X: x,
+                        x: yOverlapNodes[i].X + g,
+                        X: yOverlapNodes[i].X + g,
                     });
-                    // projection line on bottom neighbour  node
+                    // projection line on neighbour node
                     dimensioningLines.projection.push({
-                        y: yOverlapNodes[yIndex + 1].Y,
+                        y: yOverlapNodes[i].Y,
                         Y: Y + 12,
-                        x: yOverlapNodes[yIndex + 1].x,
-                        X: yOverlapNodes[yIndex + 1].x,
+                        x: yOverlapNodes[i].X,
+                        X: yOverlapNodes[i].X,
                     });
-                    // dimension node below
+                    // dimension line between projection lines
                     dimensioningLines.dimension.push({
                         y: Y + 9,
                         Y: Y + 9,
-                        x: X,
-                        X: yOverlapNodes[yIndex + 1].x,
+                        x: yOverlapNodes[i].X + g,
+                        X: yOverlapNodes[i].X,
                     });
-                    alignElements.create("xDist", dimensioningLines);
+                };
+
+                yGaps.forEach((b, g) => {
+                    let alignFound = false;
+                    if (yIndex > -1) {
+                        if (yOverlapNodes[yIndex].X + g > e.x - xOffset - threshold && yOverlapNodes[yIndex].X + g < e.x - xOffset + threshold) {
+                            if (!foundAlignment.x || d.px === yOverlapNodes[yIndex].X + g + xOffset) {
+                                d.px = yOverlapNodes[yIndex].X + g + xOffset;
+                                dimLinesLeft(yIndex, g);
+                                alignFound = true;
+                                foundAlignment.xDist = true;
+                            }
+
+                        }
+                    }
+                    if (yIndex < yOverlapNodes.length - 1) {
+                        if (yOverlapNodes[yIndex + 1].x - g > e.x + xOffset - threshold && yOverlapNodes[yIndex + 1].x - g < e.x + xOffset + threshold) {
+                            if (!foundAlignment.x || d.px === yOverlapNodes[yIndex + 1].x - g - xOffset) {
+                                d.px = yOverlapNodes[yIndex + 1].x - g - xOffset;
+                                dimLinesRight(yIndex + 1, g);
+                                alignFound = true;
+                                foundAlignment.xDist = true;
+                            }
+                        }
+                    }
+                    if (alignFound) {
+                        b.forEach(pair => dimensionLineHelper(pair));
+                        alignElements.create("xDist", dimensioningLines);
+                    }
+                });
+                // if target node is in middle
+                if (yIndex >= 0 && yIndex < yOverlapNodes.length - 1 && !foundAlignment.xDist) {
+                    const midpoint = (yOverlapNodes[yIndex + 1].x + yOverlapNodes[yIndex].X) / 2;
+                    const x = midpoint - xOffset;
+                    const X = midpoint + xOffset;
+                    if (midpoint > e.x - threshold && midpoint < e.x + threshold && (!foundAlignment.x || d.px === midpoint)) {
+                        d.px = midpoint;
+                        const Y = Math.max(d.bounds.Y, yOverlapNodes[yIndex].Y, yOverlapNodes[yIndex + 1].Y);
+                        // projection line on target node bottom
+                        dimensioningLines.projection.push({
+                            y: d.bounds.Y,
+                            Y: Y + 12,
+                            x: X,
+                            X: X,
+                        });
+                        // projection line on top neighbour node
+                        dimensioningLines.projection.push({
+                            y: yOverlapNodes[yIndex].Y,
+                            Y: Y + 12,
+                            x: yOverlapNodes[yIndex].X,
+                            X: yOverlapNodes[yIndex].X,
+                        });
+                        // dimension node above
+                        dimensioningLines.dimension.push({
+                            y: Y + 9,
+                            Y: Y + 9,
+                            x: x,
+                            X: yOverlapNodes[yIndex].X,
+                        });
+                        // projection line on target node top
+                        dimensioningLines.projection.push({
+                            y: d.bounds.Y,
+                            Y: Y + 12,
+                            x: x,
+                            X: x,
+                        });
+                        // projection line on bottom neighbour  node
+                        dimensioningLines.projection.push({
+                            y: yOverlapNodes[yIndex + 1].Y,
+                            Y: Y + 12,
+                            x: yOverlapNodes[yIndex + 1].x,
+                            X: yOverlapNodes[yIndex + 1].x,
+                        });
+                        // dimension node below
+                        dimensioningLines.dimension.push({
+                            y: Y + 9,
+                            Y: Y + 9,
+                            x: X,
+                            X: yOverlapNodes[yIndex + 1].x,
+                        });
+                        alignElements.create("xDist", dimensioningLines);
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * Given background color, return if foreground colour should be black or white based on colour brightness
+     * defaults to black
+     * @param {string} color - background color in hexadecimal format
+     */
+    function computeTextColor(color: string) {
+        // select text colour based on background brightness
+        let c = "#000000";
+        if (color) {
+            if (color.length === 7 && color[0] === "#") {
+                const r = parseInt(color.substring(1, 3), 16);
+                const g = parseInt(color.substring(3, 5), 16);
+                const b = parseInt(color.substring(5, 7), 16);
+                const brightness = Math.sqrt(0.299 * r * r + 0.587 * g * g + 0.114 * b * b);
+                if (brightness <= 170) {
+                    c = "#FFFFFF";
+                }
+            }
+        }
+        return c;
+    }
+
+    /**
+     * creates temporary pop up for group text
+     * Can be removed by passing show as false, or by restarting
+     * @param show - true show text, false hide
+     * @param groupId - id of group
+     * @param text - dummy text defaults as "New"
+     */
+    function groupTextPreview(show: boolean, groupId: string | string[], text?: string) {
+        const groupArr = Array.isArray(groupId) ? groupId : [groupId];
+        let groupSel = group.select("text");
+        if (groupId) {
+            groupSel = groupSel.filter(d => groupArr.includes(d.id));
+        }
+        groupSel.html((d) => {
+            if ((!d.data.text || d.data.text == "") && show) {
+                return text || "New";
+            } else {
+                return d.data.text;
+            }
+        });
+        return restart(undefined, true);
+    }
+
+    /**
+     * Update classes of all elements without updating other properties.
+     */
+    function updateHighlighting() {
+        group.select(".group")
+            .attr("class", d => `group ${d.data.class}`);
+        node.select("path")
+            .attr("class", d => d.class);
+        link.select(".line-front")
+            .attr("marker-start", d => {
+                const color = typeof layoutOptions.edgeColor == "string" ? layoutOptions.edgeColor : layoutOptions.edgeColor(d.predicate);
+                if (typeof layoutOptions.edgeArrowhead != "number") {
+                    if (layoutOptions.edgeArrowhead(d.predicate) == -1 || layoutOptions.edgeArrowhead(d.predicate) == 2) {
+                        if (d.predicate.class.includes("highlight")) {
+                            return addArrowDefs(defs, "409EFF", true);
+                        }
+                        return addArrowDefs(defs, color, true);
+                    }
+                    return "none";
+                }
+                return addArrowDefs(defs, color, true);
+            })
+            .attr("marker-end", d => {
+                const color = typeof layoutOptions.edgeColor == "string" ? layoutOptions.edgeColor : layoutOptions.edgeColor(d.predicate);
+                if (typeof layoutOptions.edgeArrowhead != "number") {
+                    if (layoutOptions.edgeArrowhead(d.predicate) == 1 || layoutOptions.edgeArrowhead(d.predicate) == 2) {
+                        if (d.predicate.class.includes("highlight")) {
+                            return addArrowDefs(defs, "409EFF", false);
+                        }
+                        return addArrowDefs(defs, color, false);
+                    }
+                    return "none";
+                }
+                return addArrowDefs(defs, color, false);
+            })
+            .attr("class", d => "line-front " + d.predicate.class.replace("highlight", "highlight-edge"))
     }
 
     /**
@@ -2336,7 +2310,9 @@ function networkVizJS(documentId, userLayoutOptions) {
         getDB: () => tripletsDB,
         // Get node from nodeMap
         getNode: (hash) => nodeMap.get(hash),
-        // Get node by coordinates
+        // Get Group from groupMap
+        getGroup: (hash) => groupMap.get(hash),
+        // Get nodes and edges by coordinates
         selectByCoords,
         // Get edge from predicateMap
         getPredicate: (hash) => predicateMap.get(hash),
@@ -2352,8 +2328,6 @@ function networkVizJS(documentId, userLayoutOptions) {
         removeTriplet,
         // update edge data in database
         updateTriplet,
-        // EXPERIMENTAL - DONT USE YET.
-        mergeNodeToGroup,
         // remove a node and all edges connected to it.
         removeNode,
         // add a node or array of nodes.
@@ -2362,6 +2336,12 @@ function networkVizJS(documentId, userLayoutOptions) {
         editNode,
         // edit edge property
         editEdge,
+        // Add nodes or groups to group
+        addToGroup,
+        // Remove nodes or groups from group
+        unGroup,
+        // Show or hide group text popup
+        groupTextPreview,
         // Restart styles or layout.
         restart: {
             styles: updateStyles,
@@ -2369,6 +2349,8 @@ function networkVizJS(documentId, userLayoutOptions) {
             redrawEdges: createNewLinks,
             layout: restart,
             handleDisconnects: handleDisconnects,
+            repositionGroupText: repositionGroupText,
+            highlight: updateHighlighting,
         },
         canvasOptions: {
             setWidth: (width) => {
@@ -2382,7 +2364,8 @@ function networkVizJS(documentId, userLayoutOptions) {
         },
         // Set event handlers for node.
         nodeOptions: {
-            setClickNode: setSelectNode,
+            setDblClickNode,
+            setClickNode,
             setMouseOver,
             setMouseOut,
             setMouseDown,
@@ -2391,6 +2374,14 @@ function networkVizJS(documentId, userLayoutOptions) {
         edgeOptions: {
             setClickEdge: (callback) => {
                 layoutOptions.clickEdge = callback;
+            },
+            setDblClickEdge: (callback) => {
+                layoutOptions.dblclickEdge = callback;
+            }
+        },
+        groupOptions: {
+            setDblClickGroup: (callback) => {
+                layoutOptions.dblclickGroup = callback;
             }
         },
         // Change layouts on the fly.
@@ -2401,8 +2392,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                     layoutOptions.flowDirection = "y";
                     if (layoutOptions.layoutType == "flowLayout") {
                         simulation.flowLayout(layoutOptions.flowDirection, layoutOptions.edgeLength);
-                    }
-                    else {
+                    } else {
                         layoutOptions.layoutType = "flowLayout";
                         simulation = updateColaLayout_1.updateColaLayout(layoutOptions);
                     }
@@ -2412,8 +2402,7 @@ function networkVizJS(documentId, userLayoutOptions) {
                     layoutOptions.flowDirection = "x";
                     if (layoutOptions.layoutType == "flowLayout") {
                         simulation.flowLayout(layoutOptions.flowDirection, layoutOptions.edgeLength);
-                    }
-                    else {
+                    } else {
                         layoutOptions.layoutType = "flowLayout";
                         simulation = updateColaLayout_1.updateColaLayout(layoutOptions);
                     }
